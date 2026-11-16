@@ -43,12 +43,20 @@
             Focusable="False" ToolTip="Volume"
             ValueChanged="OnVolumeChanged"/>
 
-    <!-- Play / pause, centred on the same bottom line. Focusable="False" is load-bearing:
-         a focused button would swallow Space, and Space belongs to QuickLook (it closes the
-         preview). It is a sibling of the seek surface for the same reason the slider is. -->
-    <Button x:Name="PlayPauseButton" Content="播放" Width="112" Height="24"
+    <!-- Play / pause, centred on the same bottom line. An icon rather than text: the host's
+         button style is not Aero2's, its padding differs, and a text label in a fixed-height
+         button came out clipped. Focusable="False" is load-bearing: a focused button would
+         swallow Space, and Space belongs to QuickLook (it closes the preview). It is a sibling
+         of the seek surface for the same reason the slider is. Padding="0" keeps the content
+         box the full button, whatever padding the host's style would otherwise apply. -->
+    <Button x:Name="PlayPauseButton" Width="112" Height="24" Padding="0"
             HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,3"
-            Focusable="False" IsTabStop="False"
-            Click="OnPlayPauseClick"/>
+            Focusable="False" IsTabStop="False" ToolTip="播放 / 暂停"
+            Click="OnPlayPauseClick">
+      <Path x:Name="PlayIcon" HorizontalAlignment="Center" VerticalAlignment="Center"
+            Stretch="None"
+            Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+            Data="M 0,0 L 9,6 L 0,12 Z"/>
+    </Button>
   </Grid>
 </UserControl>

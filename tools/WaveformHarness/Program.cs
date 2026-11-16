@@ -302,6 +302,10 @@ namespace QuickLook.Plugin.AudioViewer.Harness
         {
             var clock = (System.Windows.Controls.TextBlock)control.FindName("TimeText");
             var button = (System.Windows.Controls.Button)control.FindName("PlayPauseButton");
+            var icon = (System.Windows.Shapes.Path)control.FindName("PlayIcon");
+            string Icon() => icon.Data == null ? "(none)"
+                : icon.Data.ToString().StartsWith("M0,0L9,6") || icon.Data.ToString().StartsWith("M 0,0 L 9,6")
+                    ? "播放" : "暂停";
             var area = (System.Windows.Controls.Grid)control.FindName("Area");
             var view = (WaveformView)control.FindName("Waveform");
 
@@ -325,24 +329,24 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                 {
                     case 0:                        // let it play for about a second
                         if (++frame < 4) return;
-                        log.Add("播放中   : " + clock.Text + "   按钮=" + button.Content);
+                        log.Add("播放中   : " + clock.Text + "   图标=" + Icon());
                         button.RaiseEvent(click);
-                        log.Add("按下暂停 : " + clock.Text + "   按钮=" + button.Content);
+                        log.Add("按下暂停 : " + clock.Text + "   图标=" + Icon());
                         phase = 1; frame = 0;
                         break;
 
                     case 1:                        // hold it paused for about a second
                         if (++frame < 4) return;
-                        log.Add("暂停中   : " + clock.Text + "   按钮=" + button.Content);
+                        log.Add("暂停中   : " + clock.Text + "   图标=" + Icon());
                         button.RaiseEvent(click);
-                        log.Add("再次播放 : " + clock.Text + "   按钮=" + button.Content);
+                        log.Add("再次播放 : " + clock.Text + "   图标=" + Icon());
                         phase = 2; frame = 0;
                         break;
 
                     case 2:
                         if (++frame < 4) return;
                         step.Stop();
-                        log.Add("恢复后   : " + clock.Text + "   按钮=" + button.Content);
+                        log.Add("恢复后   : " + clock.Text + "   图标=" + Icon());
                         foreach (var line in log) Console.WriteLine("pause probe    : " + line);
                         ClosePreview(window);
                         ClosePreview(first);

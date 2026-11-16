@@ -397,8 +397,8 @@ namespace QuickLook.Plugin.AudioViewer
         }
 
         /// <summary>
-        /// Point the button at the current state: its label follows playback, and it is only
-        /// enabled when this file can actually be played.
+        /// Point the button at the current state: the glyph follows playback, and the button is
+        /// only enabled when this file can actually be played.
         /// </summary>
         private void SyncPlayButton()
         {
@@ -408,7 +408,19 @@ namespace QuickLook.Plugin.AudioViewer
             bool playing = _player?.IsPlaying == true;
             if (playing == _buttonShowsPause) return;
             _buttonShowsPause = playing;
-            PlayPauseButton.Content = playing ? "暂停" : "播放";
+            PlayIcon.Data = playing ? PauseGeometry : PlayGeometry;
+        }
+
+        // Icon geometry rather than Segoe MDL2 glyphs: no font dependency, and it stays crisp at
+        // any DPI. Both are 9 x 12 so the button does not shift when the glyph changes.
+        private static readonly Geometry PlayGeometry = Freeze(Geometry.Parse("M 0,0 L 9,6 L 0,12 Z"));
+        private static readonly Geometry PauseGeometry =
+            Freeze(Geometry.Parse("M 0,0 L 3,0 L 3,12 L 0,12 Z M 6,0 L 9,0 L 9,12 L 6,12 Z"));
+
+        private static Geometry Freeze(Geometry geometry)
+        {
+            geometry.Freeze();
+            return geometry;
         }
 
         /// <summary>Silence the output while a drag is in progress; the release plays again.</summary>
