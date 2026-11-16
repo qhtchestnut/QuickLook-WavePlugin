@@ -12,7 +12,7 @@ namespace QuickLook.Plugin.AudioViewer.Audio
     /// </summary>
     public sealed class AiffReader : WaveStream
     {
-        private readonly FileStream _fs;
+        private readonly Stream _fs;
         private readonly WaveFormat _format;
         private readonly long _dataStart;
         private readonly long _dataLength;
@@ -25,9 +25,14 @@ namespace QuickLook.Plugin.AudioViewer.Audio
         /// <summary>AIFF-C compression 4CC (e.g. "fl32", "sowt"); "NONE" for plain AIFF.</summary>
         public string Compression { get; private set; }
 
-        public AiffReader(string path)
+        public AiffReader(string path) : this(AudioReaderFactory.OpenShared(path))
         {
-            _fs = File.OpenRead(path);
+        }
+
+        /// <summary>Reads from <paramref name="stream"/>, which this reader then owns and disposes.</summary>
+        public AiffReader(Stream stream)
+        {
+            _fs = stream ?? throw new ArgumentNullException(nameof(stream));
             try
             {
             if (ReadFourCC() != "FORM")

@@ -46,7 +46,8 @@ needed.
   `AudioPlayer` (WASAPI), `AiffReader`, `ChannelMixSampleProvider`.
 - `tools/WaveformHarness` — dev tool: opens a real file in a real window and
   prints open/scan/paint/idle-CPU/tick numbers. `--make-test` writes its own WAV,
-  `--screenshot` renders a PNG, `--play` exercises playback. Not shipped.
+  `--screenshot` renders a PNG, `--play` exercises playback, `--click` traces the
+  playhead around a click, `--pause` drives the play/pause button. Not shipped.
 
 ## Invariants that are easy to break
 
@@ -90,8 +91,9 @@ needed.
 - `Unload()` must stop the timer, cancel `_cts`, drop the `ContextObject`
   `PropertyChanged` subscription (the host outlives the preview) and dispose both
   the player and the un-played stream.
-- Arrow keys and Space belong to Explorer and QuickLook. Only `K` is handled, and
-  `Focus()` is called only from a user click.
+- **The preview must not handle keys or take focus.** It has no `Focusable`/`PreviewKeyDown`,
+  and the play/pause button is `Focusable="False"`: a focused control would swallow Space,
+  which QuickLook uses to close the preview. Arrow keys belong to Explorer.
 
 ## Measurement
 

@@ -12,7 +12,12 @@ namespace QuickLook.Plugin.AudioViewer.Audio
         private WasapiOut _output;
         private bool _disposed;
 
-        public event EventHandler PlaybackStopped;
+        /// <summary>
+        /// Raised on the thread that created the player when the output stops, whether at the
+        /// end of the file or because the device went away (then <see cref="StoppedEventArgs.Exception"/>
+        /// is set).
+        /// </summary>
+        public event EventHandler<StoppedEventArgs> PlaybackStopped;
 
         public AudioPlayer(WaveStream stream)
         {
@@ -28,7 +33,7 @@ namespace QuickLook.Plugin.AudioViewer.Audio
                 _volume = new VolumeSampleProvider(playbackSource) { Volume = 1.0f };
                 _output = new WasapiOut(NAudio.CoreAudioApi.AudioClientShareMode.Shared, 100);
                 _output.Init(_volume);
-                _output.PlaybackStopped += (s, e) => PlaybackStopped?.Invoke(this, EventArgs.Empty);
+                _output.PlaybackStopped += (s, e) => PlaybackStopped?.Invoke(this, e);
             }
             catch
             {

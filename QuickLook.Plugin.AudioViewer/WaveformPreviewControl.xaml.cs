@@ -52,6 +52,7 @@ namespace QuickLook.Plugin.AudioViewer
         private WaveStream _stream;
         private AudioPlayer _player;
         private bool _playerFailed;
+        private bool _openFailed;
 
         /// <summary>
         /// Output volume. Kept in a static so it survives the preview that set it, and written
@@ -73,6 +74,10 @@ namespace QuickLook.Plugin.AudioViewer
         private bool _scrubbing;
         private bool _unloaded;
 
+        // What the play/pause button currently says, so syncing it costs a comparison rather
+        // than a Content write on every tick.
+        private bool _buttonShowsPause;
+
         // The playhead runs off this stopwatch, anchored at the last seek/play, so it advances
         // smoothly instead of following the reader's position (which runs ahead by the output
         // buffer and steps when the device changes state). See Tick().
@@ -90,6 +95,7 @@ namespace QuickLook.Plugin.AudioViewer
             _settingVolume = true;
             VolumeSlider.Value = _volume;   // pick up the level this session is already at
             _settingVolume = false;
+            SyncPlayButton();               // "播放", disabled until the file is open
             Waveform.SizeChanged += (s, e) => UpdatePlayhead(_lastFraction);
             Loaded += OnLoaded;
         }
@@ -160,13 +166,22 @@ namespace QuickLook.Plugin.AudioViewer
         private async void OnLoaded(object sender, RoutedEventArgs e)
         {
             Loaded -= OnLoaded;
+            if (_unloaded) return;         // closed before it was ever shown; _cts is disposed
             var token = _cts.Token;
 
+            // The playback reader and the waveform scan each open the file with their own
+            // reader, so they run side by side: an MP3 reader indexes every frame when it
+            // opens, and the scan should not wait for the other reader's index to finish.
+            await Task.WhenAll(OpenPlaybackStreamAsync(token), ScanWaveformAsync(token));
+        }
+
+        private async Task OpenPlaybackStreamAsync(CancellationToken token)
+        {
             WaveStream stream = null;
             try
             {
-                // Opening the reader is the only blocking step (an MP3 reader indexes the
-                // whole file here), so it runs off the UI thread.
+                // Opening the reader blocks (an MP3 reader indexes the whole file here), so it
+                // runs off the UI thread.
                 stream = await Task.Run(() => AudioReaderFactory.Create(_path), token);
                 if (_unloaded || token.IsCancellationRequested)
                 {
@@ -178,6 +193,7 @@ namespace QuickLook.Plugin.AudioViewer
                 UpdateTimeText(0, force: true);
                 _stream = stream;          // kept until the first play, then owned by the player
                 stream = null;
+                SyncPlayButton();          // the file is playable now
 
                 // Honour the "start playing when the preview opens" preference the previous
                 // version stored. There is deliberately no settings UI any more; the key is
@@ -192,18 +208,25 @@ namespace QuickLook.Plugin.AudioViewer
             catch (AudioFormatException ex)
             {
                 stream?.Dispose();
+                _openFailed = true;
                 if (!_unloaded) ShowStatus(ex.Message);
-                return;
+                SyncPlayButton();
             }
             catch (Exception ex)
             {
                 stream?.Dispose();
+                _openFailed = true;
                 if (!_unloaded) ShowStatus("Could not open this audio file. " + ex.Message);
-                return;
+                SyncPlayButton();
             }
+        }
 
-            // The waveform scan: its own reader, decoded once, delivered progressively so
-            // the preview fills in from left to right instead of staying empty.
+        /// <summary>
+        /// The waveform scan: its own reader, decoded once, delivered progressively so the
+        /// preview fills in from left to right instead of staying empty.
+        /// </summary>
+        private async Task ScanWaveformAsync(CancellationToken token)
+        {
             try
             {
                 WaveformData result = null;
@@ -212,21 +235,34 @@ namespace QuickLook.Plugin.AudioViewer
 
                 await Task.Run(() =>
                 {
-                    using (var scan = AudioReaderFactory.Create(_path))
+                    // A long compressed file keeps a core busy decoding for seconds; it must
+                    // not compete with the UI or the audio thread for it. The pool thread's
+                    // priority is put back before it returns to the pool.
+                    var thread = Thread.CurrentThread;
+                    var priority = thread.Priority;
+                    thread.Priority = ThreadPriority.BelowNormal;
+                    try
                     {
-                        result = WaveformData.Compute(scan, ScanColumns, snapshot =>
+                        using (var scan = AudioReaderFactory.Create(_path))
                         {
-                            // One pending delivery at a time: a slow UI thread must not queue
-                            // snapshots. The final result below is delivered regardless.
-                            if (pending) return;
-                            pending = true;
-                            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+                            result = WaveformData.Compute(scan, ScanColumns, snapshot =>
                             {
-                                pending = false;
-                                if (finalized || _unloaded) return;
-                                ShowWaveform(snapshot, done: false);
-                            }));
-                        }, progressSteps: 16, token: token);
+                                // One pending delivery at a time: a slow UI thread must not
+                                // queue snapshots. The final result below is delivered regardless.
+                                if (pending) return;
+                                pending = true;
+                                Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+                                {
+                                    pending = false;
+                                    if (finalized || _unloaded) return;
+                                    ShowWaveform(snapshot, done: false);
+                                }));
+                            }, progressSteps: 16, token: token);
+                        }
+                    }
+                    finally
+                    {
+                        thread.Priority = priority;
                     }
                 }, token);
 
@@ -240,14 +276,15 @@ namespace QuickLook.Plugin.AudioViewer
             }
             catch (Exception ex)
             {
-                if (!_unloaded) ShowStatus("Waveform unavailable: " + ex.Message);
+                // The open runs alongside and reports the same broken file more precisely.
+                if (!_unloaded && !_openFailed) ShowStatus("Waveform unavailable: " + ex.Message);
             }
         }
 
         private void ShowWaveform(WaveformData data, bool done)
         {
             Waveform.Data = data;
-            if (done) HideStatus();
+            if (done && !_openFailed && !_playerFailed) HideStatus();
             UpdatePlayhead(_lastFraction);
         }
 
@@ -279,12 +316,14 @@ namespace QuickLook.Plugin.AudioViewer
                 _stream = null;            // the player owns (and on failure disposes) it
                 _player = new AudioPlayer(stream);
                 _player.Volume = _volume;  // the level chosen before anything was playing
+                _player.PlaybackStopped += OnPlaybackStopped;
                 return true;
             }
             catch (Exception ex)
             {
                 _playerFailed = true;      // do not retry on every click
                 ShowStatus("Playback unavailable: " + ex.Message);
+                SyncPlayButton();
                 return false;
             }
         }
@@ -296,7 +335,18 @@ namespace QuickLook.Plugin.AudioViewer
         private void PlayFrom(double fromSeconds)
         {
             if (_player == null) return;
-            _player.SeekAndPlay(TimeSpan.FromSeconds(fromSeconds));
+            try
+            {
+                _player.SeekAndPlay(TimeSpan.FromSeconds(fromSeconds));
+            }
+            catch (Exception ex)
+            {
+                // The output is bound to the device it was created on; once that device is
+                // gone (headphones unplugged, Bluetooth dropped) every Play throws.
+                DropPlayer("Playback stopped: the audio device is no longer available. "
+                    + "Reopen the preview to play on the current device. (" + ex.Message + ")");
+                return;
+            }
             AnchorClock(fromSeconds);
             _idleTicks = 0;
             if (_timer == null)
@@ -309,14 +359,90 @@ namespace QuickLook.Plugin.AudioViewer
             }
             _timer.Start();
             Playhead.Visibility = Visibility.Visible;
+            SyncPlayButton();
         }
 
+        // ------------------------------------------------------------------ play / pause
+
+        private void OnPlayPauseClick(object sender, RoutedEventArgs e) => TogglePlayback();
+
+        /// <summary>
+        /// Button behaviour: while playing it pauses, otherwise it plays from wherever the
+        /// playhead is. At the end of the file, playing starts over rather than doing nothing.
+        /// </summary>
+        private void TogglePlayback()
+        {
+            if (_player == null && !EnsurePlayer()) return;
+
+            if (_player.IsPlaying)
+            {
+                PausePlayback();
+                return;
+            }
+
+            double seconds = _lastFraction >= 0.999 ? 0 : _lastFraction * _durationSeconds;
+            PlayFrom(seconds);
+        }
+
+        /// <summary>
+        /// Hold the output where it is. The clock is stopped with it, so the playhead stays on
+        /// the frame it was showing instead of drifting on while silent.
+        /// </summary>
         private void PausePlayback()
         {
-            _player?.Pause();
+            try { _player?.Pause(); } catch { /* a dead device is reported on the next play */ }
             _timer?.Stop();
-            AnchorClock(_player?.Position.TotalSeconds ?? 0);
             _clock.Stop();
+            SyncPlayButton();
+        }
+
+        /// <summary>
+        /// Point the button at the current state: its label follows playback, and it is only
+        /// enabled when this file can actually be played.
+        /// </summary>
+        private void SyncPlayButton()
+        {
+            bool playable = !_playerFailed && !_openFailed && (_player != null || _stream != null);
+            PlayPauseButton.IsEnabled = playable;
+
+            bool playing = _player?.IsPlaying == true;
+            if (playing == _buttonShowsPause) return;
+            _buttonShowsPause = playing;
+            PlayPauseButton.Content = playing ? "暂停" : "播放";
+        }
+
+        /// <summary>Silence the output while a drag is in progress; the release plays again.</summary>
+        private void SilenceForScrub()
+        {
+            try { _player?.Pause(); } catch { /* a dead device is reported on the next play */ }
+            _timer?.Stop();
+            _clock.Stop();
+        }
+
+        private void OnPlaybackStopped(object sender, StoppedEventArgs e)
+        {
+            // Raised for the end of the file too; only a failure is worth telling the user.
+            if (e.Exception == null || _unloaded) return;
+            DropPlayer("Playback stopped: " + e.Exception.Message);
+        }
+
+        /// <summary>
+        /// Give up on playback for this preview after the output failed, and say why. The
+        /// waveform stays; clicks no longer try to play.
+        /// </summary>
+        private void DropPlayer(string message)
+        {
+            _timer?.Stop();
+            _clock.Stop();
+            if (_player != null)
+            {
+                _player.PlaybackStopped -= OnPlaybackStopped;
+                try { _player.Dispose(); } catch { }
+                _player = null;
+            }
+            _playerFailed = true;
+            ShowStatus(message);
+            SyncPlayButton();
         }
 
         /// <summary>
@@ -365,6 +491,7 @@ namespace QuickLook.Plugin.AudioViewer
             {
                 _timer?.Stop();
                 _clock.Stop();
+                SyncPlayButton();      // back to "播放": the file ended, or the device went away
             }
         }
 
@@ -470,42 +597,53 @@ namespace QuickLook.Plugin.AudioViewer
 
         private void OnAreaMouseDown(object sender, MouseButtonEventArgs e)
         {
-            // A click is an explicit "use the keyboard here" gesture, so taking focus is safe
-            // (and is what makes the K shortcut work afterwards).
-            Focus();
-
+            // No Focus(): QuickLook does not take focus from Explorer, and the preview handles
+            // no keys, so there is nothing to focus for.
             if (!EnsurePlayer()) return;
 
             _scrubbing = true;
             Area.CaptureMouse();
-            // Silence the output while the pointer moves. Every move repositions the reader,
-            // and a running output would keep the audio it had already buffered for the old
-            // position, then read on from the new one — a burst of the wrong audio per move.
-            PausePlayback();
-            SeekToPointer(e);
+            // Silence the output while the pointer moves; the release plays from where it lands.
+            SilenceForScrub();
+            Playhead.Visibility = Visibility.Visible;
+            MovePlayheadToPointer(e);
             e.Handled = true;
         }
 
         private void OnAreaMouseMove(object sender, MouseEventArgs e)
         {
-            if (_scrubbing) SeekToPointer(e);
+            if (_scrubbing) MovePlayheadToPointer(e);
         }
 
         private void OnAreaMouseUp(object sender, MouseButtonEventArgs e)
         {
             if (!_scrubbing) return;
-            _scrubbing = false;
-            Area.ReleaseMouseCapture();
-            // One seek for the whole gesture, at the release point, with the output flushed
-            // before it starts again — that is what keeps the click free of the stale buffer.
-            PlayFrom(SeekToPointer(e));
+            MovePlayheadToPointer(e);
+            EndScrub();
             e.Handled = true;
         }
 
         /// <summary>
-        /// Move the playhead — and the reader — to the pointer, returning the targeted time.
+        /// Capture taken away mid-drag (Alt-Tab, a window popping up): finish the gesture at
+        /// the last position instead of leaving the preview stuck in a drag that never ends.
         /// </summary>
-        private double SeekToPointer(MouseEventArgs e)
+        private void OnAreaLostMouseCapture(object sender, MouseEventArgs e)
+        {
+            if (_scrubbing) EndScrub();
+        }
+
+        private void EndScrub()
+        {
+            _scrubbing = false;            // before the release, which raises LostMouseCapture
+            Area.ReleaseMouseCapture();
+            // The only seek of the whole gesture. SeekAndPlay stops the output first, which
+            // both drops its stale buffer and ends the playback thread's reads, so the reader
+            // is never repositioned while another thread is reading from it.
+            PlayFrom(_lastFraction * _durationSeconds);
+        }
+
+        /// <summary>Move the playhead and the clock to the pointer. The reader is not touched.</summary>
+        private void MovePlayheadToPointer(MouseEventArgs e)
         {
             double width = Waveform.ActualWidth;
             if (width > 0)
@@ -517,22 +655,7 @@ namespace QuickLook.Plugin.AudioViewer
             }
 
             UpdatePlayhead(_lastFraction);
-            double seconds = _lastFraction * _durationSeconds;
-            _player?.Seek(TimeSpan.FromSeconds(seconds));
-            UpdateTimeText(seconds, force: true);
-            return seconds;
-        }
-
-        // ------------------------------------------------------------------ keys
-
-        private void OnPreviewKeyDown(object sender, KeyEventArgs e)
-        {
-            // Only K: Space and the arrow keys belong to QuickLook (they close the preview and
-            // move between files in Explorer), so they must stay unhandled here.
-            if (e.Key != Key.K) return;
-            if (_player?.IsPlaying == true) PausePlayback();
-            else if (EnsurePlayer()) PlayFrom(_player.Position.TotalSeconds);
-            e.Handled = true;
+            UpdateTimeText(_lastFraction * _durationSeconds, force: true);
         }
 
         // ------------------------------------------------------------------ teardown

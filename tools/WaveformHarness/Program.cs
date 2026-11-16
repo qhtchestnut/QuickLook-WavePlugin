@@ -56,12 +56,14 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             var theme = "dark";
             _play = false;
             _click = false;
+            _pause = false;
             _screenshot = null;
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "light" || args[i] == "dark") theme = args[i];
                 else if (args[i] == "--play") _play = true;
                 else if (args[i] == "--click") _click = true;
+                else if (args[i] == "--pause") _pause = true;
                 else if (args[i] == "--screenshot" && i + 1 < args.Length) _screenshot = args[++i];
             }
             if (!File.Exists(path))
@@ -278,7 +280,8 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                 Console.WriteLine("warm reopen    : shown " + loadedMs.ToString("0.0")
                     + " ms, first waveform " + sw.Elapsed.TotalMilliseconds.ToString("0.0") + " ms");
 
-                if (_click) ClickProbe(window, control, first);
+                if (_pause) PauseProbe(window, control, first);
+                else if (_click) ClickProbe(window, control, first);
                 else if (_play) PlaybackProbe(window, control, first);
                 else
                 {
@@ -290,8 +293,69 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             poll.Start();
         }
 
+        /// <summary>
+        /// Play, pause from the bottom button, wait, resume from the same button, and report the
+        /// clock and the button's label at each step. A pause that only silences the output but
+        /// keeps the clock running would show up as a clock that advances while paused.
+        /// </summary>
+        private static void PauseProbe(Window window, FrameworkElement control, Window first)
+        {
+            var clock = (System.Windows.Controls.TextBlock)control.FindName("TimeText");
+            var button = (System.Windows.Controls.Button)control.FindName("PlayPauseButton");
+            var area = (System.Windows.Controls.Grid)control.FindName("Area");
+            var view = (WaveformView)control.FindName("Waveform");
+
+            // Start playing the same way a user does: a click on the waveform.
+            MoveUnderCursor(window, view, 0.2);
+            foreach (var routed in new[] { UIElement.MouseLeftButtonDownEvent, UIElement.MouseLeftButtonUpEvent })
+            {
+                area.RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(
+                    System.Windows.Input.Mouse.PrimaryDevice, Environment.TickCount,
+                    System.Windows.Input.MouseButton.Left) { RoutedEvent = routed });
+            }
+
+            var click = new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent);
+            var log = new System.Collections.Generic.List<string>();
+            int phase = 0, frame = 0;
+
+            var step = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+            step.Tick += (s, e) =>
+            {
+                switch (phase)
+                {
+                    case 0:                        // let it play for about a second
+                        if (++frame < 4) return;
+                        log.Add("播放中   : " + clock.Text + "   按钮=" + button.Content);
+                        button.RaiseEvent(click);
+                        log.Add("按下暂停 : " + clock.Text + "   按钮=" + button.Content);
+                        phase = 1; frame = 0;
+                        break;
+
+                    case 1:                        // hold it paused for about a second
+                        if (++frame < 4) return;
+                        log.Add("暂停中   : " + clock.Text + "   按钮=" + button.Content);
+                        button.RaiseEvent(click);
+                        log.Add("再次播放 : " + clock.Text + "   按钮=" + button.Content);
+                        phase = 2; frame = 0;
+                        break;
+
+                    case 2:
+                        if (++frame < 4) return;
+                        step.Stop();
+                        log.Add("恢复后   : " + clock.Text + "   按钮=" + button.Content);
+                        foreach (var line in log) Console.WriteLine("pause probe    : " + line);
+                        ClosePreview(window);
+                        ClosePreview(first);
+                        Application.Current.Shutdown();
+                        break;
+                }
+            };
+            step.Start();
+        }
+
         private static bool _play;
         private static bool _click;
+        private static bool _pause;
         private static string _screenshot;
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -302,6 +366,21 @@ namespace QuickLook.Plugin.AudioViewer.Harness
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool GetCursorPos(out Point32 p);
+
+        /// <summary>
+        /// The cursor cannot be moved reliably from here, so move the window under it until
+        /// the pointer sits at <paramref name="fraction"/> of the waveform's width.
+        /// </summary>
+        private static void MoveUnderCursor(Window window, FrameworkElement view, double fraction)
+        {
+            Point32 cursor;
+            if (!GetCursorPos(out cursor)) return;
+            var wanted = view.PointToScreen(new Point(view.ActualWidth * fraction, view.ActualHeight / 2));
+            var dpi = VisualTreeHelper.GetDpi(window);
+            window.Left += (cursor.X - wanted.X) / dpi.DpiScaleX;
+            window.Top += (cursor.Y - wanted.Y) / dpi.DpiScaleY;
+            window.UpdateLayout();
+        }
 
         /// <summary>
         /// Click the waveform where a user would — a press, a short hold, a release — and sample
@@ -315,16 +394,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             var shift = (TranslateTransform)control.FindName("PlayheadShift");
             var view = (WaveformView)control.FindName("Waveform");
 
-            Point32 cursor;
-            if (GetCursorPos(out cursor))
-            {
-                var wanted = view.PointToScreen(
-                    new Point(view.ActualWidth * 0.4, view.ActualHeight / 2));
-                var dpi = VisualTreeHelper.GetDpi(window);
-                window.Left += (cursor.X - wanted.X) / dpi.DpiScaleX;
-                window.Top += (cursor.Y - wanted.Y) / dpi.DpiScaleY;
-                window.UpdateLayout();
-            }
+            MoveUnderCursor(window, view, 0.4);
 
             Console.WriteLine("pointer at     : x=" + System.Windows.Input.Mouse.GetPosition(view).X.ToString("0.0")
                 + " of " + view.ActualWidth.ToString("0") + " px");
@@ -449,8 +519,8 @@ namespace QuickLook.Plugin.AudioViewer.Harness
         }
 
         /// <summary>
-        /// Start playback the way a user does — by pressing K on the focused preview — then
-        /// report whether the clock advances and what playing costs.
+        /// Start playback the way a user does — by clicking near the start of the waveform —
+        /// then report whether the clock advances and what playing costs.
         /// </summary>
         private static void PlaybackProbe(Window window, FrameworkElement control, Window first)
         {
@@ -467,13 +537,14 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             var process = Process.GetCurrentProcess();
             var cpuStart = process.TotalProcessorTime;
 
-            control.RaiseEvent(new System.Windows.Input.KeyEventArgs(
-                System.Windows.Input.Keyboard.PrimaryDevice,
-                PresentationSource.FromVisual(control), Environment.TickCount,
-                System.Windows.Input.Key.K)
+            var area = (System.Windows.Controls.Grid)control.FindName("Area");
+            MoveUnderCursor(window, (FrameworkElement)control.FindName("Waveform"), 0.05);
+            foreach (var routed in new[] { UIElement.MouseLeftButtonDownEvent, UIElement.MouseLeftButtonUpEvent })
             {
-                RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent
-            });
+                area.RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(
+                    System.Windows.Input.Mouse.PrimaryDevice, Environment.TickCount,
+                    System.Windows.Input.MouseButton.Left) { RoutedEvent = routed });
+            }
 
             var marks = new System.Collections.Generic.List<string>();
             var probe = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
