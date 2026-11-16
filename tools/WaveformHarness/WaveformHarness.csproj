@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>WaveformHarness</AssemblyName>
+    <RootNamespace>QuickLook.Plugin.AudioViewer.Harness</RootNamespace>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Dev tool, not shipped in the .qlplugin. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\QuickLook.Plugin.AudioViewer\QuickLook.Plugin.AudioViewer.csproj" />
+    <ProjectReference Include="..\..\QuickLook.Common\QuickLook.Common.csproj" />
+  </ItemGroup>
+
+</Project>

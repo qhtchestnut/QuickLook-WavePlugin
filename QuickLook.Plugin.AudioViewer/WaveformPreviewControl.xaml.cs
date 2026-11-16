@@ -1,0 +1,558 @@
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
+using NAudio.Wave;
+using QuickLook.Common.Helpers;
+using QuickLook.Common.Plugin;
+using QuickLook.Plugin.AudioViewer.Audio;
+
+namespace QuickLook.Plugin.AudioViewer
+{
+    /// <summary>
+    /// The whole preview: a waveform of the entire file, fitted to the window, plus playback.
+    /// Click or drag anywhere on the waveform to seek; clicking also starts playback.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately small. There is no spectrogram, no zoom, no scrolling and no settings,
+    /// so nothing here can recompute on a timer: the only per-frame work while playing is
+    /// moving the playhead (a render transform) and rewriting the time text once a second.
+    /// </remarks>
+    public partial class WaveformPreviewControl : UserControl
+    {
+        /// <summary>
+        /// Columns the waveform scan is stored at. Fixed and independent of the window width,
+        /// so resizing re-reduces ~8k columns instead of re-decoding the file.
+        /// </summary>
+        private const int ScanColumns = 8192;
+
+        /// <summary>Playhead update interval while playing; playback pauses stop the timer.</summary>
+        private const int TickMilliseconds = 33;
+
+        // The plugin's settings file, shared with the 1.x plugin: its AutoPlay is read and its
+        // other keys are left untouched.
+        private const string SettingsDomain = "QuickLook.Plugin.AudioViewer";
+        private const string VolumeKey = "Volume";
+        private const double DefaultVolume = 0.8;
+
+        private readonly string _path;
+        private readonly ContextObject _context;
+        private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+
+        // The reader is opened up front (it gives the duration and the waveform scan), but the
+        // WASAPI output is not: a device stream that is initialised and never played still
+        // costs CPU on its own thread, and opening a preview should cost nothing until the user
+        // asks for sound. The first click therefore creates the player and hands it the stream.
+        private WaveStream _stream;
+        private AudioPlayer _player;
+        private bool _playerFailed;
+
+        /// <summary>
+        /// Output volume. Kept in a static so it survives the preview that set it, and written
+        /// to the plugin's settings file so it survives QuickLook itself.
+        /// </summary>
+        private static float _volume = LoadVolume();
+
+        // Guards OnVolumeChanged while the control seeds the slider from _volume: without it a
+        // markup-set Value would write 0.8 into the remembered level on every new preview.
+        private bool _settingVolume;
+        private DispatcherTimer _volumeSaveTimer;
+        private bool _volumeDirty;
+
+        private DispatcherTimer _timer;
+        private double _durationSeconds;
+        private double _lastFraction;
+        private int _lastSecond = -1;
+        private int _idleTicks;
+        private bool _scrubbing;
+        private bool _unloaded;
+
+        // The playhead runs off this stopwatch, anchored at the last seek/play, so it advances
+        // smoothly instead of following the reader's position (which runs ahead by the output
+        // buffer and steps when the device changes state). See Tick().
+        private readonly Stopwatch _clock = new Stopwatch();
+        private double _anchorSeconds;
+
+        public WaveformPreviewControl(string path, ContextObject context)
+        {
+            InitializeComponent();
+            _path = path;
+            _context = context;
+            ApplyTheme();
+            // The host can resolve or change its theme after we are built; detached in Unload().
+            if (_context != null) _context.PropertyChanged += OnContextPropertyChanged;
+            _settingVolume = true;
+            VolumeSlider.Value = _volume;   // pick up the level this session is already at
+            _settingVolume = false;
+            Waveform.SizeChanged += (s, e) => UpdatePlayhead(_lastFraction);
+            Loaded += OnLoaded;
+        }
+
+        // ------------------------------------------------------------------ theme
+
+        private void ApplyTheme()
+        {
+            bool dark = ResolveIsDark();
+            Waveform.WaveColor = dark ? Color.FromRgb(0xC6, 0xC6, 0xC6) : Color.FromRgb(0x48, 0x48, 0x48);
+            Playhead.Fill = Frozen(dark ? Color.FromRgb(0xF2, 0xF2, 0xF2) : Color.FromRgb(0x14, 0x14, 0x14));
+            var subdued = Frozen(dark ? Color.FromRgb(0x96, 0x96, 0x96) : Color.FromRgb(0x64, 0x64, 0x64));
+            TimeText.Foreground = subdued;
+            StatusText.Foreground = subdued;
+        }
+
+        private bool ResolveIsDark()
+        {
+            switch (_context?.Theme)
+            {
+                case Themes.Dark: return true;
+                case Themes.Light: return false;
+                default:
+                    // No host theme (or Themes.None): fall back to the Windows app theme.
+                    try
+                    {
+                        var v = Microsoft.Win32.Registry.GetValue(
+                            @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                            "AppsUseLightTheme", 1);
+                        return v is int light && light == 0;
+                    }
+                    catch
+                    {
+                        return true;
+                    }
+            }
+        }
+
+        private static Brush Frozen(Color c)
+        {
+            var b = new SolidColorBrush(c);
+            b.Freeze();
+            return b;
+        }
+
+        /// <summary>
+        /// The previous version's "AutoPlay" setting, kept so an existing install keeps its
+        /// behaviour. Everything else it stored is deliberately ignored: those settings drove
+        /// features that no longer exist.
+        /// </summary>
+        private static bool AutoPlay
+        {
+            get
+            {
+                try { return SettingHelper.Get("AutoPlay", false, SettingsDomain); }
+                catch { return false; }
+            }
+        }
+
+        private void OnContextPropertyChanged(object sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName != nameof(ContextObject.Theme) || _unloaded) return;
+            ApplyTheme();
+        }
+
+        // ------------------------------------------------------------------ load
+
+        private async void OnLoaded(object sender, RoutedEventArgs e)
+        {
+            Loaded -= OnLoaded;
+            var token = _cts.Token;
+
+            WaveStream stream = null;
+            try
+            {
+                // Opening the reader is the only blocking step (an MP3 reader indexes the
+                // whole file here), so it runs off the UI thread.
+                stream = await Task.Run(() => AudioReaderFactory.Create(_path), token);
+                if (_unloaded || token.IsCancellationRequested)
+                {
+                    stream.Dispose();
+                    return;
+                }
+
+                _durationSeconds = stream.TotalTime.TotalSeconds;
+                UpdateTimeText(0, force: true);
+                _stream = stream;          // kept until the first play, then owned by the player
+                stream = null;
+
+                // Honour the "start playing when the preview opens" preference the previous
+                // version stored. There is deliberately no settings UI any more; the key is
+                // read (and can be flipped by hand) but never written.
+                if (AutoPlay && EnsurePlayer()) PlayFrom(0);
+            }
+            catch (OperationCanceledException)
+            {
+                stream?.Dispose();
+                return;
+            }
+            catch (AudioFormatException ex)
+            {
+                stream?.Dispose();
+                if (!_unloaded) ShowStatus(ex.Message);
+                return;
+            }
+            catch (Exception ex)
+            {
+                stream?.Dispose();
+                if (!_unloaded) ShowStatus("Could not open this audio file. " + ex.Message);
+                return;
+            }
+
+            // The waveform scan: its own reader, decoded once, delivered progressively so
+            // the preview fills in from left to right instead of staying empty.
+            try
+            {
+                WaveformData result = null;
+                bool pending = false;
+                bool finalized = false;
+
+                await Task.Run(() =>
+                {
+                    using (var scan = AudioReaderFactory.Create(_path))
+                    {
+                        result = WaveformData.Compute(scan, ScanColumns, snapshot =>
+                        {
+                            // One pending delivery at a time: a slow UI thread must not queue
+                            // snapshots. The final result below is delivered regardless.
+                            if (pending) return;
+                            pending = true;
+                            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+                            {
+                                pending = false;
+                                if (finalized || _unloaded) return;
+                                ShowWaveform(snapshot, done: false);
+                            }));
+                        }, progressSteps: 16, token: token);
+                    }
+                }, token);
+
+                if (_unloaded || token.IsCancellationRequested) return;
+                finalized = true;
+                ShowWaveform(result, done: true);
+            }
+            catch (OperationCanceledException)
+            {
+                // Preview closed mid-scan.
+            }
+            catch (Exception ex)
+            {
+                if (!_unloaded) ShowStatus("Waveform unavailable: " + ex.Message);
+            }
+        }
+
+        private void ShowWaveform(WaveformData data, bool done)
+        {
+            Waveform.Data = data;
+            if (done) HideStatus();
+            UpdatePlayhead(_lastFraction);
+        }
+
+        // ------------------------------------------------------------------ status
+
+        private void ShowStatus(string message)
+        {
+            StatusText.Text = message;
+            StatusText.Visibility = Visibility.Visible;
+        }
+
+        private void HideStatus() => StatusText.Visibility = Visibility.Collapsed;
+
+        // ------------------------------------------------------------------ playback
+
+        /// <summary>
+        /// Create the WASAPI output on first use and hand it the reader. Returns false when
+        /// this file cannot be played (no output device, rejected format) — the waveform still
+        /// shows, it just cannot be played.
+        /// </summary>
+        private bool EnsurePlayer()
+        {
+            if (_player != null) return true;
+            if (_playerFailed || _stream == null) return false;
+
+            try
+            {
+                var stream = _stream;
+                _stream = null;            // the player owns (and on failure disposes) it
+                _player = new AudioPlayer(stream);
+                _player.Volume = _volume;  // the level chosen before anything was playing
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _playerFailed = true;      // do not retry on every click
+                ShowStatus("Playback unavailable: " + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Start playing from <paramref name="fromSeconds"/>, discarding whatever the output
+        /// had buffered for the old position.
+        /// </summary>
+        private void PlayFrom(double fromSeconds)
+        {
+            if (_player == null) return;
+            _player.SeekAndPlay(TimeSpan.FromSeconds(fromSeconds));
+            AnchorClock(fromSeconds);
+            _idleTicks = 0;
+            if (_timer == null)
+            {
+                _timer = new DispatcherTimer(DispatcherPriority.Render)
+                {
+                    Interval = TimeSpan.FromMilliseconds(TickMilliseconds)
+                };
+                _timer.Tick += (s, a) => Tick();
+            }
+            _timer.Start();
+            Playhead.Visibility = Visibility.Visible;
+        }
+
+        private void PausePlayback()
+        {
+            _player?.Pause();
+            _timer?.Stop();
+            AnchorClock(_player?.Position.TotalSeconds ?? 0);
+            _clock.Stop();
+        }
+
+        /// <summary>
+        /// Drives the playhead and the clock from a monotonic stopwatch anchored at the last
+        /// seek, not from the output's position.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="AudioPlayer.Position"/> is the reader's position, which runs ahead of
+        /// what is audible by the output buffer and can step when the device changes state.
+        /// Feeding it straight to the playhead made the playhead jump at the drop of a hat —
+        /// most visibly right after a click, where it first honoured the click and was then
+        /// yanked back to wherever the audio still was. The clock only ever moves forwards;
+        /// the output's position is used solely to correct real drift.
+        /// </remarks>
+        private void Tick()
+        {
+            if (_player == null || _unloaded || _scrubbing)
+            {
+                return;
+            }
+
+            double total = _player.Duration.TotalSeconds;
+            double played = _anchorSeconds + _clock.Elapsed.TotalSeconds;
+            double actual = _player.Position.TotalSeconds;
+            if (Math.Abs(actual - played) > 0.3)
+            {
+                // Real drift (device stall, a seek we did not make): trust the audio again.
+                AnchorClock(actual);
+                played = actual;
+            }
+            if (total > 0 && played > total) played = total;
+
+            _lastFraction = total > 0 ? played / total : 0;
+            UpdatePlayhead(_lastFraction);
+            UpdateTimeText(played, force: false);
+
+            if (_player.IsPlaying)
+            {
+                _idleTicks = 0;
+                return;
+            }
+
+            // The output reports "not playing" for a moment while starting, and permanently
+            // at the end of the file or when the device disappears: stop after a short grace.
+            if (++_idleTicks > 10)
+            {
+                _timer?.Stop();
+                _clock.Stop();
+            }
+        }
+
+        private void OnVolumeChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            // Also fires while the control seeds itself from _volume (and would fire if markup
+            // ever set an initial Value): that is not a user adjustment, so it must not write
+            // the remembered level.
+            if (_settingVolume) return;
+
+            _volume = (float)e.NewValue;
+            if (_player != null) _player.Volume = _volume;
+            ScheduleVolumeSave();
+        }
+
+        /// <summary>
+        /// Persist the level once the user stops moving the slider. Writing per change is what
+        /// makes a slider drag janky: SettingHelper rewrites the whole XML document on every
+        /// Set, and a drag fires this dozens of times a second.
+        /// </summary>
+        private void ScheduleVolumeSave()
+        {
+            _volumeDirty = true;
+            if (_volumeSaveTimer == null)
+            {
+                _volumeSaveTimer = new DispatcherTimer(DispatcherPriority.Background)
+                {
+                    Interval = TimeSpan.FromMilliseconds(400)
+                };
+                _volumeSaveTimer.Tick += (s, e) =>
+                {
+                    _volumeSaveTimer.Stop();
+                    SaveVolume();
+                };
+            }
+
+            _volumeSaveTimer.Stop();
+            _volumeSaveTimer.Start();
+        }
+
+        private void SaveVolume()
+        {
+            if (!_volumeDirty) return;
+            _volumeDirty = false;
+            try
+            {
+                SettingHelper.Set(VolumeKey, (double)_volume, SettingsDomain);
+            }
+            catch
+            {
+                // A settings write must never take the preview down with it.
+            }
+        }
+
+        private static float LoadVolume()
+        {
+            try
+            {
+                double stored = SettingHelper.Get(VolumeKey, DefaultVolume, SettingsDomain);
+                return (float)Math.Max(0.0, Math.Min(1.0, stored));
+            }
+            catch
+            {
+                return (float)DefaultVolume;
+            }
+        }
+
+        /// <summary>Restart the playhead clock at the given audio position.</summary>
+        private void AnchorClock(double seconds)
+        {
+            _anchorSeconds = seconds;
+            _clock.Restart();
+        }
+
+        private void UpdatePlayhead(double fraction)
+        {
+            double width = Waveform.ActualWidth;
+            if (width <= 0) return;
+            PlayheadShift.X = Clamp01(fraction) * width;
+        }
+
+        private static double Clamp01(double value) => value < 0 ? 0 : value > 1 ? 1 : value;
+
+        private void UpdateTimeText(double positionSeconds, bool force)
+        {
+            int second = (int)positionSeconds;
+            if (!force && second == _lastSecond) return;
+            _lastSecond = second;
+            TimeText.Text = Format(positionSeconds) + " / " + Format(_durationSeconds);
+        }
+
+        /// <summary>mm:ss, or h:mm:ss once the duration needs hours.</summary>
+        internal static string Format(double seconds)
+        {
+            if (seconds < 0 || double.IsNaN(seconds)) seconds = 0;
+            var t = TimeSpan.FromSeconds(seconds);
+            return t.TotalHours >= 1
+                ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}"
+                : $"{(int)t.TotalMinutes}:{t.Seconds:00}";
+        }
+
+        // ------------------------------------------------------------------ seeking
+
+        private void OnAreaMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            // A click is an explicit "use the keyboard here" gesture, so taking focus is safe
+            // (and is what makes the K shortcut work afterwards).
+            Focus();
+
+            if (!EnsurePlayer()) return;
+
+            _scrubbing = true;
+            Area.CaptureMouse();
+            // Silence the output while the pointer moves. Every move repositions the reader,
+            // and a running output would keep the audio it had already buffered for the old
+            // position, then read on from the new one — a burst of the wrong audio per move.
+            PausePlayback();
+            SeekToPointer(e);
+            e.Handled = true;
+        }
+
+        private void OnAreaMouseMove(object sender, MouseEventArgs e)
+        {
+            if (_scrubbing) SeekToPointer(e);
+        }
+
+        private void OnAreaMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_scrubbing) return;
+            _scrubbing = false;
+            Area.ReleaseMouseCapture();
+            // One seek for the whole gesture, at the release point, with the output flushed
+            // before it starts again — that is what keeps the click free of the stale buffer.
+            PlayFrom(SeekToPointer(e));
+            e.Handled = true;
+        }
+
+        /// <summary>
+        /// Move the playhead — and the reader — to the pointer, returning the targeted time.
+        /// </summary>
+        private double SeekToPointer(MouseEventArgs e)
+        {
+            double width = Waveform.ActualWidth;
+            if (width > 0)
+            {
+                // Coordinates are taken in the waveform's space, so the preview's margins are
+                // accounted for automatically and a drag past either edge clamps.
+                double x = e.GetPosition(Waveform).X;
+                _lastFraction = Clamp01(x / width);
+            }
+
+            UpdatePlayhead(_lastFraction);
+            double seconds = _lastFraction * _durationSeconds;
+            _player?.Seek(TimeSpan.FromSeconds(seconds));
+            UpdateTimeText(seconds, force: true);
+            return seconds;
+        }
+
+        // ------------------------------------------------------------------ keys
+
+        private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            // Only K: Space and the arrow keys belong to QuickLook (they close the preview and
+            // move between files in Explorer), so they must stay unhandled here.
+            if (e.Key != Key.K) return;
+            if (_player?.IsPlaying == true) PausePlayback();
+            else if (EnsurePlayer()) PlayFrom(_player.Position.TotalSeconds);
+            e.Handled = true;
+        }
+
+        // ------------------------------------------------------------------ teardown
+
+        public void Unload()
+        {
+            _unloaded = true;              // stop every in-flight continuation from touching us
+            _cts.Cancel();                 // abort an in-flight decode
+            _timer?.Stop();
+            _timer = null;
+            // Closing within the debounce window must not lose the level.
+            _volumeSaveTimer?.Stop();
+            _volumeSaveTimer = null;
+            SaveVolume();
+            if (_context != null) _context.PropertyChanged -= OnContextPropertyChanged;
+            _player?.Dispose();            // releases the WASAPI device and the file handle
+            _player = null;
+            _stream?.Dispose();            // never played: the reader still holds the file
+            _stream = null;
+            _cts.Dispose();
+        }
+    }
+}

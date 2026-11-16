@@ -1,0 +1,13 @@
+<Project>
+
+  <!--
+    QuickLook.Common is upstream source pulled in as a submodule, and its csproj carries a
+    PreBuildEvent (`$(SolutionDir)Scripts\update-version.ps1`) that only makes sense inside
+    upstream's own solution: building the project directly leaves $(SolutionDir) empty and
+    the step fails the build. Clear it for that one project so a plain `dotnet build` works.
+  -->
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'QuickLook.Common'">
+    <PreBuildEvent></PreBuildEvent>
+  </PropertyGroup>
+
+</Project>

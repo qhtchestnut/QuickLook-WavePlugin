@@ -1,0 +1,460 @@
+using System;
+using System.Threading;
+using NAudio.Dmo;
+using NAudio.Wave;
+
+namespace QuickLook.Plugin.AudioViewer.Audio
+{
+    /// <summary>
+    /// Per-channel, per-column min/max peaks, computed in a single streaming pass
+    /// with bounded memory (safe for long, many-channel files).
+    /// </summary>
+    public sealed class WaveformData
+    {
+        /// <summary>Indexed [channel][column].</summary>
+        public float[][] Min { get; }
+        /// <summary>Indexed [channel][column].</summary>
+        public float[][] Max { get; }
+
+        /// <summary>Per-column min/max of the sample-exact (L+R)/2 mono mix, populated ONLY for
+        /// stereo (2-channel) input; null otherwise. Feeds the "combined — mono average" stereo
+        /// display mode, which cannot be reconstructed from the per-channel peaks above.</summary>
+        public float[] CombinedMin { get; }
+        public float[] CombinedMax { get; }
+
+        public int ChannelCount => Min.Length;
+        public int Columns => Min.Length > 0 ? Min[0].Length : 0;
+
+        private WaveformData(float[][] min, float[][] max, float[] combinedMin = null, float[] combinedMax = null)
+        {
+            Min = min;
+            Max = max;
+            CombinedMin = combinedMin;
+            CombinedMax = combinedMax;
+        }
+
+        /// <summary>Builds a WaveformData directly from prepared arrays — used by the stereo
+        /// combine transform (<see cref="StereoWaveform"/>) and by tests. Keeps the primary
+        /// constructor private so the streaming scan stays the only producer of raw scans.</summary>
+        public static WaveformData FromChannels(float[][] min, float[][] max,
+            float[] combinedMin = null, float[] combinedMax = null)
+            => new WaveformData(min, max, combinedMin, combinedMax);
+
+        /// <summary>
+        /// Reduce to <paramref name="columns"/> columns, each the min of mins and max of maxes
+        /// over its source span, so every peak survives. The view rasterizes this at its
+        /// on-screen width instead of letting a nearest-neighbour blit drop columns.
+        /// Returns this instance when no reduction is needed.
+        /// </summary>
+        public WaveformData Downsample(int columns)
+        {
+            int n = Columns;
+            if (columns < 1 || columns >= n) return this;
+
+            var min = new float[ChannelCount][];
+            var max = new float[ChannelCount][];
+            for (int ch = 0; ch < ChannelCount; ch++)
+            {
+                min[ch] = ReduceSpans(Min[ch], columns, Math.Min);
+                max[ch] = ReduceSpans(Max[ch], columns, Math.Max);
+            }
+            return new WaveformData(min, max,
+                CombinedMin == null ? null : ReduceSpans(CombinedMin, columns, Math.Min),
+                CombinedMax == null ? null : ReduceSpans(CombinedMax, columns, Math.Max));
+        }
+
+        private static float[] ReduceSpans(float[] src, int columns, Func<float, float, float> pick)
+        {
+            var dst = new float[columns];
+            long n = src.Length;
+            for (int i = 0; i < columns; i++)
+            {
+                int start = (int)(i * n / columns);
+                int end = (int)((i + 1) * n / columns);
+                float v = src[start];
+                for (int j = start + 1; j < end; j++) v = pick(v, src[j]);
+                dst[i] = v;
+            }
+            return dst;
+        }
+
+        public static WaveformData Compute(WaveStream stream, int columns = 2000,
+            CancellationToken token = default)
+            => Compute(stream, columns, onProgress: null, token: token);
+
+        /// <summary>
+        /// Streaming waveform scan with optional progressive delivery: when <paramref name="onProgress"/>
+        /// is non-null and the stream length is known, it is invoked roughly <paramref name="progressSteps"/>
+        /// times over the pass, each with an INDEPENDENT deep-copied snapshot of the partial result
+        /// (columns not yet scanned remain zero). The final snapshot delivered equals the returned value.
+        /// When <paramref name="onProgress"/> is null the pass runs with zero added overhead (no cloning);
+        /// when the length is unknown no intermediate callbacks fire.
+        /// </summary>
+        public static WaveformData Compute(WaveStream stream, int columns, Action<WaveformData> onProgress,
+            int progressSteps = 10, CancellationToken token = default)
+        {
+            if (columns < 1) columns = 1;
+            if (progressSteps < 1) progressSteps = 1;
+
+            return IsPcm16(stream.WaveFormat)
+                ? ComputePcm16(stream, columns, onProgress, progressSteps, token)
+                : ComputeFloat(stream, columns, onProgress, progressSteps, token);
+        }
+
+        /// <summary>
+        /// Deep-copies the current per-channel Min/Max accumulator arrays into a fresh, fully
+        /// independent WaveformData — later mutation of the source arrays cannot alter it.
+        /// </summary>
+        private static WaveformData Snapshot(float[][] min, float[][] max,
+            float[] combinedMin, float[] combinedMax)
+        {
+            int channels = min.Length;
+            var mn = new float[channels][];
+            var mx = new float[channels][];
+            for (int c = 0; c < channels; c++)
+            {
+                int cols = min[c].Length;
+                mn[c] = new float[cols];
+                mx[c] = new float[cols];
+                Array.Copy(min[c], mn[c], cols);
+                Array.Copy(max[c], mx[c], cols);
+            }
+
+            // Carry the stereo mono-mix envelope so mono-average snapshots aren't blank
+            // mid-scan; null (mono / multichannel) stays null.
+            float[] cMin = null, cMax = null;
+            if (combinedMin != null)
+            {
+                int cols = combinedMin.Length;
+                cMin = new float[cols];
+                cMax = new float[cols];
+                Array.Copy(combinedMin, cMin, cols);
+                Array.Copy(combinedMax, cMax, cols);
+            }
+            return new WaveformData(mn, mx, cMin, cMax);
+        }
+
+        /// <summary>
+        /// True for 16-bit integer PCM, whether tagged as plain WaveFormatEncoding.Pcm or as
+        /// WAVE_FORMAT_EXTENSIBLE with the PCM sub-format (the layout real multichannel audio
+        /// interfaces typically write). Anything else — including extensible IEEE-float —
+        /// returns false so the caller falls back to the safe, generic float decode path.
+        /// </summary>
+        private static bool IsPcm16(WaveFormat format)
+        {
+            if (format.BitsPerSample != 16) return false;
+            if (format.Encoding == WaveFormatEncoding.Pcm) return true;
+            if (format.Encoding != WaveFormatEncoding.Extensible) return false;
+
+            // A WaveFormatExtensible built in-process (not round-tripped through a file)
+            // keeps its SubFormat directly.
+            if (format is WaveFormatExtensible ext)
+                return ext.SubFormat == AudioMediaSubtypes.MEDIASUBTYPE_PCM;
+
+            // NAudio's WaveFileReader parses an on-disk WAVE_FORMAT_EXTENSIBLE fmt chunk into
+            // a WaveFormatExtraData, not a WaveFormatExtensible — the cbSize extension bytes
+            // (validBitsPerSample:2, channelMask:4, SubFormat GUID:16) are exposed raw via
+            // ExtraData instead. Decode the SubFormat GUID from that layout.
+            if (format is WaveFormatExtraData extra && format.ExtraSize >= 22)
+            {
+                var extraData = extra.ExtraData;
+                if (extraData != null && extraData.Length >= 22)
+                {
+                    var subFormatBytes = new byte[16];
+                    Array.Copy(extraData, 6, subFormatBytes, 0, 16);
+                    return new Guid(subFormatBytes) == AudioMediaSubtypes.MEDIASUBTYPE_PCM;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Fast path for 16-bit integer PCM: reads raw bytes directly off the stream and
+        /// decodes each sample inline, avoiding NAudio's per-sample Pcm16BitToSampleProvider.
+        /// </summary>
+        private static WaveformData ComputePcm16(WaveStream stream, int columns,
+            Action<WaveformData> onProgress, int progressSteps, CancellationToken token)
+        {
+            var format = stream.WaveFormat;
+            int channels = Math.Max(1, format.Channels);
+            int bytesPerFrame = stream.BlockAlign > 0 ? stream.BlockAlign : channels * 2;
+
+            long totalFrames = stream.BlockAlign > 0 ? stream.Length / stream.BlockAlign : 0;
+            if (totalFrames <= 0) totalFrames = long.MaxValue;
+            long framesPerColumn = Math.Max(1, totalFrames / columns);
+
+            // Progress is only meaningful when the length is known; the null path allocates
+            // and clones nothing (doProgress stays false → the per-frame block is a bare branch).
+            bool doProgress = onProgress != null && totalFrames != long.MaxValue;
+            long progressInterval = doProgress ? Math.Max(1, totalFrames / progressSteps) : 0;
+            long framesProcessed = 0;
+            long nextProgressAt = progressInterval;
+            int progressFired = 0;
+
+            var min = new float[channels][];
+            var max = new float[channels][];
+            for (int c = 0; c < channels; c++)
+            {
+                min[c] = new float[columns];
+                max[c] = new float[columns];
+            }
+
+            var minAcc = new short[channels];
+            var maxAcc = new short[channels];
+            ResetPcm16Accumulators(minAcc, maxAcc);
+
+            // Stereo only: also build the sample-exact (L+R)/2 mono envelope in this same pass
+            // (it can't be derived from the per-channel peaks). Accumulated in float to match the
+            // generic float path; flushed alongside the per-channel columns.
+            bool stereo = channels == 2;
+            float[] combinedMin = stereo ? new float[columns] : null;
+            float[] combinedMax = stereo ? new float[columns] : null;
+            float monoMinAcc = float.MaxValue, monoMaxAcc = float.MinValue;
+
+            var buffer = new byte[bytesPerFrame * 4096];
+            int remainderBytes = 0;
+
+            int col = 0;
+            long framesLeftInColumn = framesPerColumn;
+            long framesInColumn = 0;
+
+            int read;
+            while ((read = stream.Read(buffer, remainderBytes, buffer.Length - remainderBytes)) > 0)
+            {
+                token.ThrowIfCancellationRequested(); // abort promptly if the preview closed
+                int available = remainderBytes + read;
+                int usableBytes = available - (available % bytesPerFrame);
+
+                for (int offset = 0; offset < usableBytes; offset += bytesPerFrame)
+                {
+                    for (int c = 0; c < channels; c++)
+                    {
+                        int bi = offset + c * 2;
+                        short v = (short)(buffer[bi] | (buffer[bi + 1] << 8));
+                        if (v > maxAcc[c]) maxAcc[c] = v;
+                        if (v < minAcc[c]) minAcc[c] = v;
+                    }
+                    if (stereo)
+                    {
+                        short s0 = (short)(buffer[offset] | (buffer[offset + 1] << 8));
+                        short s1 = (short)(buffer[offset + 2] | (buffer[offset + 3] << 8));
+                        float mono = (s0 + s1) * (0.5f / 32768f);
+                        if (mono > monoMaxAcc) monoMaxAcc = mono;
+                        if (mono < monoMinAcc) monoMinAcc = mono;
+                    }
+                    framesInColumn++;
+
+                    if (col < columns - 1)
+                    {
+                        framesLeftInColumn--;
+                        if (framesLeftInColumn == 0)
+                        {
+                            FlushPcm16Column(min, max, minAcc, maxAcc, channels, col, framesInColumn);
+                            if (stereo)
+                            {
+                                combinedMin[col] = monoMinAcc;
+                                combinedMax[col] = monoMaxAcc;
+                                monoMinAcc = float.MaxValue;
+                                monoMaxAcc = float.MinValue;
+                            }
+                            col++;
+                            framesLeftInColumn = framesPerColumn;
+                            framesInColumn = 0;
+                        }
+                    }
+
+                    if (doProgress)
+                    {
+                        framesProcessed++;
+                        if (framesProcessed >= nextProgressAt
+                            && progressFired < progressSteps - 1
+                            && framesProcessed < totalFrames)
+                        {
+                            onProgress(Snapshot(min, max, combinedMin, combinedMax));
+                            progressFired++;
+                            nextProgressAt += progressInterval;
+                        }
+                    }
+                }
+
+                remainderBytes = available - usableBytes;
+                if (remainderBytes > 0)
+                    Buffer.BlockCopy(buffer, usableBytes, buffer, 0, remainderBytes);
+            }
+
+            FlushPcm16Column(min, max, minAcc, maxAcc, channels, col, framesInColumn);
+            if (stereo && framesInColumn > 0)
+            {
+                combinedMin[col] = monoMinAcc;
+                combinedMax[col] = monoMaxAcc;
+            }
+
+            // Final snapshot: equals the returned result, and is the last snapshot delivered.
+            if (doProgress) onProgress(Snapshot(min, max, combinedMin, combinedMax));
+
+            return new WaveformData(min, max, combinedMin, combinedMax);
+        }
+
+        private static void ResetPcm16Accumulators(short[] minAcc, short[] maxAcc)
+        {
+            for (int c = 0; c < minAcc.Length; c++)
+            {
+                minAcc[c] = short.MaxValue;
+                maxAcc[c] = short.MinValue;
+            }
+        }
+
+        private static void FlushPcm16Column(float[][] min, float[][] max, short[] minAcc, short[] maxAcc,
+            int channels, int col, long framesInColumn)
+        {
+            if (framesInColumn <= 0) return;
+
+            for (int c = 0; c < channels; c++)
+            {
+                min[c][col] = minAcc[c] / 32768f;
+                max[c][col] = maxAcc[c] / 32768f;
+            }
+            ResetPcm16Accumulators(minAcc, maxAcc);
+        }
+
+        /// <summary>
+        /// Safe fallback for everything that isn't 16-bit integer PCM (float, extensible
+        /// float, 8/24/32-bit int, ADPCM-via-decoder, etc.), decoded generically through
+        /// NAudio's ISampleProvider chain.
+        /// </summary>
+        private static WaveformData ComputeFloat(WaveStream stream, int columns,
+            Action<WaveformData> onProgress, int progressSteps, CancellationToken token)
+        {
+            var provider = stream.ToSampleProvider();
+            int channels = Math.Max(1, provider.WaveFormat.Channels);
+
+            // Total per-channel frames from the decoded PCM length; fall back to a
+            // single wide column if the reader can't report a length.
+            long totalFrames = stream.BlockAlign > 0 ? stream.Length / stream.BlockAlign : 0;
+            if (totalFrames <= 0) totalFrames = long.MaxValue;
+
+            long framesPerColumn = Math.Max(1, totalFrames / columns);
+
+            // Progress is only meaningful when the length is known; the null path allocates
+            // and clones nothing (doProgress stays false → the per-frame block is a bare branch).
+            bool doProgress = onProgress != null && totalFrames != long.MaxValue;
+            long progressInterval = doProgress ? Math.Max(1, totalFrames / progressSteps) : 0;
+            long framesProcessed = 0;
+            long nextProgressAt = progressInterval;
+            int progressFired = 0;
+
+            var min = new float[channels][];
+            var max = new float[channels][];
+            for (int c = 0; c < channels; c++)
+            {
+                min[c] = new float[columns];
+                max[c] = new float[columns];
+            }
+
+            var minAcc = new float[channels];
+            var maxAcc = new float[channels];
+            ResetFloatAccumulators(minAcc, maxAcc);
+
+            // Stereo only: build the sample-exact (L+R)/2 mono envelope in the same pass; see
+            // ComputePcm16 for the rationale.
+            bool stereo = channels == 2;
+            float[] combinedMin = stereo ? new float[columns] : null;
+            float[] combinedMax = stereo ? new float[columns] : null;
+            float monoMinAcc = float.MaxValue, monoMaxAcc = float.MinValue;
+
+            var buffer = new float[channels * 4096];
+            int col = 0;
+            long framesLeftInColumn = framesPerColumn;
+            long framesInColumn = 0;
+            int read;
+
+            while ((read = provider.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                token.ThrowIfCancellationRequested(); // abort promptly if the preview closed
+                for (int i = 0; i + channels <= read; i += channels)
+                {
+                    for (int c = 0; c < channels; c++)
+                    {
+                        float v = buffer[i + c];
+                        if (v > maxAcc[c]) maxAcc[c] = v;
+                        if (v < minAcc[c]) minAcc[c] = v;
+                    }
+                    if (stereo)
+                    {
+                        float mono = (buffer[i] + buffer[i + 1]) * 0.5f;
+                        if (mono > monoMaxAcc) monoMaxAcc = mono;
+                        if (mono < monoMinAcc) monoMinAcc = mono;
+                    }
+                    framesInColumn++;
+
+                    if (col < columns - 1)
+                    {
+                        framesLeftInColumn--;
+                        if (framesLeftInColumn == 0)
+                        {
+                            FlushFloatColumn(min, max, minAcc, maxAcc, channels, col, framesInColumn);
+                            if (stereo)
+                            {
+                                combinedMin[col] = monoMinAcc;
+                                combinedMax[col] = monoMaxAcc;
+                                monoMinAcc = float.MaxValue;
+                                monoMaxAcc = float.MinValue;
+                            }
+                            col++;
+                            framesLeftInColumn = framesPerColumn;
+                            framesInColumn = 0;
+                        }
+                    }
+
+                    if (doProgress)
+                    {
+                        framesProcessed++;
+                        if (framesProcessed >= nextProgressAt
+                            && progressFired < progressSteps - 1
+                            && framesProcessed < totalFrames)
+                        {
+                            onProgress(Snapshot(min, max, combinedMin, combinedMax));
+                            progressFired++;
+                            nextProgressAt += progressInterval;
+                        }
+                    }
+                }
+            }
+
+            FlushFloatColumn(min, max, minAcc, maxAcc, channels, col, framesInColumn);
+            if (stereo && framesInColumn > 0)
+            {
+                combinedMin[col] = monoMinAcc;
+                combinedMax[col] = monoMaxAcc;
+            }
+
+            // Final snapshot: equals the returned result, and is the last snapshot delivered.
+            if (doProgress) onProgress(Snapshot(min, max, combinedMin, combinedMax));
+
+            return new WaveformData(min, max, combinedMin, combinedMax);
+        }
+
+        private static void ResetFloatAccumulators(float[] minAcc, float[] maxAcc)
+        {
+            for (int c = 0; c < minAcc.Length; c++)
+            {
+                minAcc[c] = float.MaxValue;
+                maxAcc[c] = float.MinValue;
+            }
+        }
+
+        private static void FlushFloatColumn(float[][] min, float[][] max, float[] minAcc, float[] maxAcc,
+            int channels, int col, long framesInColumn)
+        {
+            if (framesInColumn <= 0) return;
+
+            for (int c = 0; c < channels; c++)
+            {
+                min[c][col] = minAcc[c];
+                max[c][col] = maxAcc[c];
+            }
+            ResetFloatAccumulators(minAcc, maxAcc);
+        }
+    }
+}

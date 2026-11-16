@@ -1,0 +1,25 @@
+<Project>
+
+  <!--
+    Single source of truth for the plugin's public version. The plugin csproj
+    consumes this as <Version> (stamping AssemblyVersion/FileVersion/
+    InformationalVersion), and QuickLook.Plugin.Metadata.config carries the same
+    number for QuickLook's installer.
+  -->
+
+  <PropertyGroup>
+    <PluginVersion>2.0.0</PluginVersion>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <!--
+    Neither the .NET Framework 4.6.2 (QuickLook.Common) nor the 4.8 (plugin)
+    targeting pack is installed on every build machine, so both take their
+    reference assemblies from NuGet. Unconditional because
+    TargetFrameworkIdentifier is not evaluated yet when this file is imported.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <LangVersion>latest</LangVersion>
+    <Platforms>AnyCPU;x64</Platforms>
+    <!-- WaveformView derives from WPF's FrameworkElement, so the tests that
+         exercise it need the WPF framework references. -->
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\QuickLook.Plugin.AudioViewer\QuickLook.Plugin.AudioViewer.csproj" />
+    <!-- Copied to the test output so anything touching QuickLook.Common types (ContextObject,
+         Themes) can load it at runtime; the plugin itself references it with Private=false. -->
+    <ProjectReference Include="..\..\QuickLook.Common\QuickLook.Common.csproj" />
+  </ItemGroup>
+
+</Project>

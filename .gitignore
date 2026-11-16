@@ -1,0 +1,25 @@
+# 构建产物
+[Bb]in/
+[Oo]bj/
+/Build/
+
+# 本地还原的 NuGet 包（测量/离线构建时用 NUGET_PACKAGES 指到这里）
+/.pkgs/
+/.dotnet_home/
+
+# 打包产物
+*.qlplugin
+/QuickLook.Plugin.AudioViewer.zip
+
+# 测量工具生成的测试音频和截图
+/artifacts/
+
+# 测试结果
+TestResults/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
