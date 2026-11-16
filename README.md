@@ -55,7 +55,7 @@
 不需要装 Visual Studio）。`QuickLook.Common` 是子模块，务必带上：
 
 ```
-git clone --recurse-submodules https://github.com/<你的账号>/QuickLook-WavePlugin.git
+git clone --recurse-submodules https://github.com/qhtchestnut/QuickLook-WavePlugin.git
 dotnet build QuickLook.Plugin.AudioViewer/QuickLook.Plugin.AudioViewer.csproj -c Release
 powershell -File Scripts/pack-zip.ps1
 ```
