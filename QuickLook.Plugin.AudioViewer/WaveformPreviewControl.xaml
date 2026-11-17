@@ -40,7 +40,7 @@
          it. -->
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom"
                 Margin="0,0,16,4">
-      <CheckBox x:Name="AutoPlayCheck" Content="自动播放" VerticalAlignment="Center"
+      <CheckBox x:Name="AutoPlayCheck" Content="Auto Play" VerticalAlignment="Center"
                 Margin="0,0,12,0" Focusable="False" IsTabStop="False"
                 ToolTip="打开预览时自动开始播放（对所有文件生效）"
                 Checked="OnAutoPlayChanged" Unchecked="OnAutoPlayChanged"/>
