@@ -57,6 +57,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             _play = false;
             _click = false;
             _pause = false;
+            _autoPlayProbe = false;
             _screenshot = null;
             for (int i = 0; i < args.Length; i++)
             {
@@ -64,6 +65,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                 else if (args[i] == "--play") _play = true;
                 else if (args[i] == "--click") _click = true;
                 else if (args[i] == "--pause") _pause = true;
+                else if (args[i] == "--autoplay") _autoPlayProbe = true;
                 else if (args[i] == "--screenshot" && i + 1 < args.Length) _screenshot = args[++i];
             }
             if (!File.Exists(path))
@@ -238,6 +240,14 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                     var volume = (System.Windows.Controls.Slider)control.FindName("VolumeSlider");
                     volume.Value = 0.35;
 
+                    if (_autoPlayProbe)
+                    {
+                        var auto = (System.Windows.Controls.CheckBox)control.FindName("AutoPlayCheck");
+                        auto.IsChecked = true;
+                        Console.WriteLine("autoplay set   : " + auto.IsChecked
+                            + "  (the next preview should start playing on its own)");
+                    }
+
                     MeasureWarmReopen(window, path, context);
                 };
                 idle.Start();
@@ -280,6 +290,28 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                 Console.WriteLine("warm reopen    : shown " + loadedMs.ToString("0.0")
                     + " ms, first waveform " + sw.Elapsed.TotalMilliseconds.ToString("0.0") + " ms");
 
+                if (_autoPlayProbe)
+                {
+                    // Nothing has been clicked in this window: if the clock moves, auto-play did it.
+                    var clock = (System.Windows.Controls.TextBlock)control.FindName("TimeText");
+                    var auto = (System.Windows.Controls.CheckBox)control.FindName("AutoPlayCheck");
+                    Console.WriteLine("autoplay state : checkbox=" + auto.IsChecked
+                        + "  icon=" + IconState(control) + "  clock at open=" + clock.Text);
+
+                    var wait = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1600) };
+                    wait.Tick += (s2, e2) =>
+                    {
+                        wait.Stop();
+                        Console.WriteLine("autoplay later : icon=" + IconState(control)
+                            + "  clock=" + clock.Text + "  (nothing was clicked)");
+                        ClosePreview(window);
+                        ClosePreview(first);
+                        Application.Current.Shutdown();
+                    };
+                    wait.Start();
+                    return;
+                }
+
                 if (_pause) PauseProbe(window, control, first);
                 else if (_click) ClickProbe(window, control, first);
                 else if (_play) PlaybackProbe(window, control, first);
@@ -302,10 +334,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
         {
             var clock = (System.Windows.Controls.TextBlock)control.FindName("TimeText");
             var button = (System.Windows.Controls.Button)control.FindName("PlayPauseButton");
-            var icon = (System.Windows.Shapes.Path)control.FindName("PlayIcon");
-            string Icon() => icon.Data == null ? "(none)"
-                : icon.Data.ToString().StartsWith("M0,0L9,6") || icon.Data.ToString().StartsWith("M 0,0 L 9,6")
-                    ? "播放" : "暂停";
+
             var area = (System.Windows.Controls.Grid)control.FindName("Area");
             var view = (WaveformView)control.FindName("Waveform");
 
@@ -329,24 +358,24 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                 {
                     case 0:                        // let it play for about a second
                         if (++frame < 4) return;
-                        log.Add("播放中   : " + clock.Text + "   图标=" + Icon());
+                        log.Add("播放中   : " + clock.Text + "   图标=" + IconState(control));
                         button.RaiseEvent(click);
-                        log.Add("按下暂停 : " + clock.Text + "   图标=" + Icon());
+                        log.Add("按下暂停 : " + clock.Text + "   图标=" + IconState(control));
                         phase = 1; frame = 0;
                         break;
 
                     case 1:                        // hold it paused for about a second
                         if (++frame < 4) return;
-                        log.Add("暂停中   : " + clock.Text + "   图标=" + Icon());
+                        log.Add("暂停中   : " + clock.Text + "   图标=" + IconState(control));
                         button.RaiseEvent(click);
-                        log.Add("再次播放 : " + clock.Text + "   图标=" + Icon());
+                        log.Add("再次播放 : " + clock.Text + "   图标=" + IconState(control));
                         phase = 2; frame = 0;
                         break;
 
                     case 2:
                         if (++frame < 4) return;
                         step.Stop();
-                        log.Add("恢复后   : " + clock.Text + "   图标=" + Icon());
+                        log.Add("恢复后   : " + clock.Text + "   图标=" + IconState(control));
                         foreach (var line in log) Console.WriteLine("pause probe    : " + line);
                         ClosePreview(window);
                         ClosePreview(first);
@@ -360,6 +389,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
         private static bool _play;
         private static bool _click;
         private static bool _pause;
+        private static bool _autoPlayProbe;
         private static string _screenshot;
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -570,6 +600,15 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                 Application.Current.Shutdown();
             };
             probe.Start();
+        }
+
+        /// <summary>Which glyph the play/pause button is showing — the direct "is it playing" tell.</summary>
+        private static string IconState(FrameworkElement control)
+        {
+            var icon = (System.Windows.Shapes.Path)control.FindName("PlayIcon");
+            if (icon?.Data == null) return "(none)";
+            string data = icon.Data.ToString();
+            return data.Contains("3,0") ? "暂停" : "播放";
         }
 
         /// <summary>Flush the dispatcher down to idle so layout and render work has run.</summary>

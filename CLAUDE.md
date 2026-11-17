@@ -47,7 +47,8 @@ needed.
 - `tools/WaveformHarness` — dev tool: opens a real file in a real window and
   prints open/scan/paint/idle-CPU/tick numbers. `--make-test` writes its own WAV,
   `--screenshot` renders a PNG, `--play` exercises playback, `--click` traces the
-  playhead around a click, `--pause` drives the play/pause button. Not shipped.
+  playhead around a click, `--pause` drives the play/pause button, `--autoplay`
+  turns the checkbox on and checks the next preview starts on its own. Not shipped.
 
 ## Invariants that are easy to break
 
@@ -85,7 +86,12 @@ needed.
   whole XML document, so a slider drag would write dozens of times a second: the
   write is debounced 400 ms and flushed from `Unload()` (a preview closed inside
   the debounce window must not lose the level). The value is stored in the same
-  settings file as 1.x used, next to the `AutoPlay` key that is still read.
+  settings file as 1.x used.
+- **`AutoPlay` is a checkbox now, and it is global.** It lives in a static
+  (`_autoPlay`) read once from the settings file, seeded into the checkbox behind
+  a `_settingAutoPlay` guard (an `IsChecked` in markup would fire the handler and
+  overwrite the stored value, exactly like the volume slider's `Value`), and
+  written on change. `OnLoaded` uses it to start playback; nothing else reads it.
 - **The rasterizer bakes in colour**: the cached bitmap has the wave colour in
   its pixels, so changing `WaveColor` must drop it (the setter does).
 - `Unload()` must stop the timer, cancel `_cts`, drop the `ContextObject`

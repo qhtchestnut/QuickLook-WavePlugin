@@ -38,6 +38,7 @@ namespace QuickLook.Plugin.AudioViewer
         // The plugin's settings file, shared with the 1.x plugin: its AutoPlay is read and its
         // other keys are left untouched.
         private const string SettingsDomain = "QuickLook.Plugin.AudioViewer";
+        private const string AutoPlayKey = "AutoPlay";
         private const string VolumeKey = "Volume";
         private const double DefaultVolume = 0.8;
 
@@ -65,6 +66,15 @@ namespace QuickLook.Plugin.AudioViewer
         private bool _settingVolume;
         private DispatcherTimer _volumeSaveTimer;
         private bool _volumeDirty;
+
+        /// <summary>
+        /// Play on open. A static so every preview in the session agrees, and persisted, so it
+        /// survives QuickLook — otherwise a fresh install has no way to turn it on at all.
+        /// </summary>
+        private static bool _autoPlay = LoadAutoPlay();
+
+        // Same trap as _settingVolume: seeding the checkbox must not look like a user change.
+        private bool _settingAutoPlay;
 
         private DispatcherTimer _timer;
         private double _durationSeconds;
@@ -95,6 +105,9 @@ namespace QuickLook.Plugin.AudioViewer
             _settingVolume = true;
             VolumeSlider.Value = _volume;   // pick up the level this session is already at
             _settingVolume = false;
+            _settingAutoPlay = true;
+            AutoPlayCheck.IsChecked = _autoPlay;
+            _settingAutoPlay = false;
             SyncPlayButton();               // "播放", disabled until the file is open
             Waveform.SizeChanged += (s, e) => UpdatePlayhead(_lastFraction);
             Loaded += OnLoaded;
@@ -110,6 +123,9 @@ namespace QuickLook.Plugin.AudioViewer
             var subdued = Frozen(dark ? Color.FromRgb(0x96, 0x96, 0x96) : Color.FromRgb(0x64, 0x64, 0x64));
             TimeText.Foreground = subdued;
             StatusText.Foreground = subdued;
+            // A CheckBox inherits its label colour from the control tree, which is black by
+            // default — invisible on the dark background.
+            AutoPlayCheck.Foreground = subdued;
         }
 
         private bool ResolveIsDark()
@@ -141,24 +157,37 @@ namespace QuickLook.Plugin.AudioViewer
             return b;
         }
 
-        /// <summary>
-        /// The previous version's "AutoPlay" setting, kept so an existing install keeps its
-        /// behaviour. Everything else it stored is deliberately ignored: those settings drove
-        /// features that no longer exist.
-        /// </summary>
-        private static bool AutoPlay
-        {
-            get
-            {
-                try { return SettingHelper.Get("AutoPlay", false, SettingsDomain); }
-                catch { return false; }
-            }
-        }
-
         private void OnContextPropertyChanged(object sender, PropertyChangedEventArgs e)
         {
             if (e.PropertyName != nameof(ContextObject.Theme) || _unloaded) return;
             ApplyTheme();
+        }
+
+        // ------------------------------------------------------------------ auto-play
+
+        /// <summary>
+        /// Start playing as soon as a preview opens. A property of the plugin, not of a file, so
+        /// it is one checkbox for everything and it is remembered across restarts.
+        /// </summary>
+        private void OnAutoPlayChanged(object sender, RoutedEventArgs e)
+        {
+            if (_settingAutoPlay) return;
+
+            _autoPlay = AutoPlayCheck.IsChecked == true;
+            try
+            {
+                SettingHelper.Set(AutoPlayKey, _autoPlay, SettingsDomain);
+            }
+            catch
+            {
+                // A settings write must never take the preview down with it.
+            }
+        }
+
+        private static bool LoadAutoPlay()
+        {
+            try { return SettingHelper.Get(AutoPlayKey, false, SettingsDomain); }
+            catch { return false; }
         }
 
         // ------------------------------------------------------------------ load
@@ -195,10 +224,9 @@ namespace QuickLook.Plugin.AudioViewer
                 stream = null;
                 SyncPlayButton();          // the file is playable now
 
-                // Honour the "start playing when the preview opens" preference the previous
-                // version stored. There is deliberately no settings UI any more; the key is
-                // read (and can be flipped by hand) but never written.
-                if (AutoPlay && EnsurePlayer()) PlayFrom(0);
+                // Start playing on open when the checkbox says so. The setting is the user's,
+                // read once so every preview in the session agrees.
+                if (_autoPlay && EnsurePlayer()) PlayFrom(0);
             }
             catch (OperationCanceledException)
             {

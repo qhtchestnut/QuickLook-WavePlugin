@@ -31,17 +31,24 @@
                  Margin="18,0,0,8" FontFamily="Consolas, Courier New" FontSize="11"/>
     </Grid>
 
-    <!-- Volume, on the same bottom line as the time but at the right edge. A sibling of the
-         seek surface rather than a child of it, so dragging it never seeks, and left with
-         the stock template so it looks like the rest of the system.
+    <!-- Auto-play and volume, right edge of the same bottom line. Both sit in a panel so their
+         spacing does not depend on hand-tuned margins, and both are siblings of the seek
+         surface: a control inside it would seek as well as do its own job.
 
-         No Value here on purpose: the control sets it from the level this session is at, and
-         an initial Value in markup would fire ValueChanged while loading and overwrite it. -->
-    <Slider x:Name="VolumeSlider" Width="90" HorizontalAlignment="Right" VerticalAlignment="Bottom"
-            Margin="0,0,16,4" Minimum="0" Maximum="1"
-            IsMoveToPointEnabled="True"
-            Focusable="False" ToolTip="Volume"
-            ValueChanged="OnVolumeChanged"/>
+         No IsChecked/Value in markup on purpose: the control seeds them from the remembered
+         state, and an initial value here would fire the handlers while loading and overwrite
+         it. -->
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,16,4">
+      <CheckBox x:Name="AutoPlayCheck" Content="自动播放" VerticalAlignment="Center"
+                Margin="0,0,12,0" Focusable="False" IsTabStop="False"
+                ToolTip="打开预览时自动开始播放（对所有文件生效）"
+                Checked="OnAutoPlayChanged" Unchecked="OnAutoPlayChanged"/>
+      <Slider x:Name="VolumeSlider" Width="90" VerticalAlignment="Center"
+              Minimum="0" Maximum="1" IsMoveToPointEnabled="True"
+              Focusable="False" IsTabStop="False" ToolTip="音量"
+              ValueChanged="OnVolumeChanged"/>
+    </StackPanel>
 
     <!-- Play / pause, centred on the same bottom line. An icon rather than text: the host's
          button style is not Aero2's, its padding differs, and a text label in a fixed-height
