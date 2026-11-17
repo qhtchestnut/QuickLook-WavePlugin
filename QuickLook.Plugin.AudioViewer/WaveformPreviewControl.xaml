@@ -40,13 +40,18 @@
          it. -->
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom"
                 Margin="0,0,16,4">
+      <!-- Scaled as a whole rather than restyled: the stock template stays, box and label
+           shrink together, and nothing gets a bespoke look. -->
       <CheckBox x:Name="AutoPlayCheck" Content="Auto Play" VerticalAlignment="Center"
-                Margin="0,0,12,0" Focusable="False" IsTabStop="False"
-                ToolTip="打开预览时自动开始播放（对所有文件生效）"
-                Checked="OnAutoPlayChanged" Unchecked="OnAutoPlayChanged"/>
+                Margin="0,0,10,0" Focusable="False" IsTabStop="False"
+                Checked="OnAutoPlayChanged" Unchecked="OnAutoPlayChanged">
+        <CheckBox.LayoutTransform>
+          <ScaleTransform ScaleX="0.85" ScaleY="0.85"/>
+        </CheckBox.LayoutTransform>
+      </CheckBox>
       <Slider x:Name="VolumeSlider" Width="90" VerticalAlignment="Center"
               Minimum="0" Maximum="1" IsMoveToPointEnabled="True"
-              Focusable="False" IsTabStop="False" ToolTip="音量"
+              Focusable="False" IsTabStop="False"
               ValueChanged="OnVolumeChanged"/>
     </StackPanel>
 
@@ -58,7 +63,7 @@
          box the full button, whatever padding the host's style would otherwise apply. -->
     <Button x:Name="PlayPauseButton" Width="112" Height="24" Padding="0"
             HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,3"
-            Focusable="False" IsTabStop="False" ToolTip="播放 / 暂停"
+            Focusable="False" IsTabStop="False"
             Click="OnPlayPauseClick">
       <Path x:Name="PlayIcon" HorizontalAlignment="Center" VerticalAlignment="Center"
             Stretch="None"
