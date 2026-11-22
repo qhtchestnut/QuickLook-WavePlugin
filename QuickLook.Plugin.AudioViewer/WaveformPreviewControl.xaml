@@ -27,14 +27,23 @@
       <TextBlock x:Name="StatusText" HorizontalAlignment="Center" VerticalAlignment="Center"
                  FontSize="12" Visibility="Collapsed" IsHitTestVisible="False"/>
 
-      <!-- The clock and the stream's format share the bottom-left corner. The format line is
-           filled from the reader once the file is open, so it is empty until then. -->
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Bottom"
-                  Margin="18,0,0,8">
-        <TextBlock x:Name="TimeText" FontFamily="Consolas, Courier New" FontSize="11"/>
-        <TextBlock x:Name="FormatText" Margin="10,0,0,0"
-                   FontFamily="Consolas, Courier New" FontSize="11"/>
-      </StackPanel>
+      <!-- The bottom line is laid out in three columns with the middle one reserved for the
+           play button (112 + breathing room), so the clock can stay at the left edge while the
+           format line sits right beside the button instead of running into the clock's digits.
+           The button itself lives outside this grid — it must not seek. -->
+      <Grid VerticalAlignment="Bottom">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="136"/>
+          <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock x:Name="TimeText" Grid.Column="0" HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                   Margin="18,0,0,8" FontFamily="Consolas, Courier New" FontSize="11"/>
+
+        <TextBlock x:Name="FormatText" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                   Margin="0,0,8,8" FontFamily="Consolas, Courier New" FontSize="11"/>
+      </Grid>
     </Grid>
 
     <!-- Auto-play and volume, right edge of the same bottom line. Both sit in a panel so their

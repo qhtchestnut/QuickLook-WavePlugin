@@ -112,6 +112,7 @@ namespace QuickLook.Plugin.AudioViewer
             _settingAutoPlay = false;
             SyncPlayButton();               // "播放", disabled until the file is open
             Waveform.SizeChanged += (s, e) => UpdatePlayhead(_lastFraction);
+            SizeChanged += (s, e) => UpdateFormatVisibility();
             Loaded += OnLoaded;
         }
 
@@ -124,7 +125,7 @@ namespace QuickLook.Plugin.AudioViewer
             Playhead.Fill = Frozen(dark ? Color.FromRgb(0xF2, 0xF2, 0xF2) : Color.FromRgb(0x14, 0x14, 0x14));
             var subdued = Frozen(dark ? Color.FromRgb(0x96, 0x96, 0x96) : Color.FromRgb(0x64, 0x64, 0x64));
             TimeText.Foreground = subdued;
-            FormatText.Foreground = subdued;
+            FormatText.Foreground = Frozen(dark ? Color.FromRgb(0xE2, 0xE2, 0xE2) : Color.FromRgb(0x2A, 0x2A, 0x2A));   // brighter than the clock: it sits next to a run of digits and must read as a label
             StatusText.Foreground = subdued;
             // A CheckBox inherits its label colour from the control tree, which is black by
             // default — invisible on the dark background.
@@ -615,6 +616,16 @@ namespace QuickLook.Plugin.AudioViewer
             double width = Waveform.ActualWidth;
             if (width <= 0) return;
             PlayheadShift.X = Clamp01(fraction) * width;
+        }
+
+        /// <summary>
+        /// Hide the format line on a narrow preview. The clock is pinned to the left edge and
+        /// the format line to the play button's left, so below roughly 520 px the two would
+        /// draw over each other.
+        /// </summary>
+        private void UpdateFormatVisibility()
+        {
+            FormatText.Visibility = ActualWidth >= 520 ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private static double Clamp01(double value) => value < 0 ? 0 : value > 1 ? 1 : value;

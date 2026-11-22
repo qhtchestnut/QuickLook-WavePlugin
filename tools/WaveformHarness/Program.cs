@@ -61,7 +61,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             _screenshot = null;
             for (int i = 0; i < args.Length; i++)
             {
-                if (args[i] == "light" || args[i] == "dark") theme = args[i];
+                if (args[i] == "light" || args[i] == "dark") { theme = args[i]; _darkTheme = theme != "light"; }
                 else if (args[i] == "--play") _play = true;
                 else if (args[i] == "--click") _click = true;
                 else if (args[i] == "--pause") _pause = true;
@@ -389,6 +389,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
         private static bool _play;
         private static bool _click;
         private static bool _pause;
+        private static bool _darkTheme = true;
         private static bool _autoPlayProbe;
         private static string _screenshot;
 
@@ -537,7 +538,11 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             var composed = new DrawingVisual();
             using (var dc = composed.RenderOpen())
             {
-                dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x20)), null,
+                // Match the theme, or a light preview gets composited onto a dark card and
+                // its own dark text disappears.
+                dc.DrawRectangle(new SolidColorBrush(_darkTheme
+                        ? Color.FromRgb(0x20, 0x20, 0x20)
+                        : Color.FromRgb(0xF0, 0xF0, 0xF0)), null,
                     new Rect(0, 0, width, height));
                 dc.DrawImage(preview, new Rect(0, 0, width, height));
             }
