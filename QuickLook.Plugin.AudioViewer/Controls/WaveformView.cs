@@ -20,6 +20,12 @@ namespace QuickLook.Plugin.AudioViewer.Controls
         private WaveformData _data;
         private Color _waveColor = Color.FromRgb(0xC8, 0xC8, 0xC8);
 
+        /// <summary>
+        /// Waveform columns per device pixel. 1.0 keeps every screen pixel a distinct column;
+        /// slightly below that trades a little horizontal detail for a calmer, cheaper render.
+        /// </summary>
+        private const double ColumnDensity = 0.8;
+
         private ImageSource _bitmap;
         private int _generation;
 
@@ -75,7 +81,12 @@ namespace QuickLook.Plugin.AudioViewer.Controls
             var dpi = VisualTreeHelper.GetDpi(this);
             int lanePixelHeight = Math.Max(1, (int)Math.Round(h / channels * dpi.DpiScaleY));
             // One column per device pixel, but never more columns than the scan has.
-            int columns = Math.Min(data.Columns, Math.Max(1, (int)Math.Ceiling(w * dpi.DpiScaleX)));
+            // Columns to rasterize, as a fraction of the element's device pixels. Below 1 the
+            // envelope is drawn a little coarser than the screen can resolve: one column spans
+            // more than a pixel, which reads as a softer waveform and costs proportionally less
+            // to reduce and paint. Raise it back towards 1 for the crispest possible edge.
+            int columns = Math.Min(data.Columns,
+                Math.Max(1, (int)Math.Ceiling(w * dpi.DpiScaleX * ColumnDensity)));
 
             if (!ReferenceEquals(_requestedData, data)
                 || _requestedLanePx != lanePixelHeight

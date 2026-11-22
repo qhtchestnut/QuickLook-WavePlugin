@@ -28,9 +28,11 @@ namespace QuickLook.Plugin.AudioViewer
     {
         /// <summary>
         /// Columns the waveform scan is stored at. Fixed and independent of the window width,
-        /// so resizing re-reduces ~8k columns instead of re-decoding the file.
+        /// so resizing re-reduces a few thousand columns instead of re-decoding the file. The
+        /// view renders at no more than ~0.8 columns per device pixel, so this covers a window
+        /// up to ~5000 px wide without the scan becoming the limit.
         /// </summary>
-        private const int ScanColumns = 8192;
+        private const int ScanColumns = 4096;
 
         /// <summary>Playhead update interval while playing; playback pauses stop the timer.</summary>
         private const int TickMilliseconds = 33;
@@ -122,6 +124,7 @@ namespace QuickLook.Plugin.AudioViewer
             Playhead.Fill = Frozen(dark ? Color.FromRgb(0xF2, 0xF2, 0xF2) : Color.FromRgb(0x14, 0x14, 0x14));
             var subdued = Frozen(dark ? Color.FromRgb(0x96, 0x96, 0x96) : Color.FromRgb(0x64, 0x64, 0x64));
             TimeText.Foreground = subdued;
+            FormatText.Foreground = subdued;
             StatusText.Foreground = subdued;
             // A CheckBox inherits its label colour from the control tree, which is black by
             // default — invisible on the dark background.
@@ -220,6 +223,7 @@ namespace QuickLook.Plugin.AudioViewer
 
                 _durationSeconds = stream.TotalTime.TotalSeconds;
                 UpdateTimeText(0, force: true);
+                FormatText.Text = AudioFormatInfo.Describe(stream.WaveFormat);
                 _stream = stream;          // kept until the first play, then owned by the player
                 stream = null;
                 SyncPlayButton();          // the file is playable now

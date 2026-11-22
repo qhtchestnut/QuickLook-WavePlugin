@@ -27,8 +27,14 @@
       <TextBlock x:Name="StatusText" HorizontalAlignment="Center" VerticalAlignment="Center"
                  FontSize="12" Visibility="Collapsed" IsHitTestVisible="False"/>
 
-      <TextBlock x:Name="TimeText" HorizontalAlignment="Left" VerticalAlignment="Bottom"
-                 Margin="18,0,0,8" FontFamily="Consolas, Courier New" FontSize="11"/>
+      <!-- The clock and the stream's format share the bottom-left corner. The format line is
+           filled from the reader once the file is open, so it is empty until then. -->
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                  Margin="18,0,0,8">
+        <TextBlock x:Name="TimeText" FontFamily="Consolas, Courier New" FontSize="11"/>
+        <TextBlock x:Name="FormatText" Margin="10,0,0,0"
+                   FontFamily="Consolas, Courier New" FontSize="11"/>
+      </StackPanel>
     </Grid>
 
     <!-- Auto-play and volume, right edge of the same bottom line. Both sit in a panel so their

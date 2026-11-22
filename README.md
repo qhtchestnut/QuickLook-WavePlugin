@@ -27,7 +27,8 @@
 - **播放 / 暂停按钮**：底部居中；暂停后再按从原处继续，播完再按从头开始。
 - **Auto Play**：右下角复选框，对所有文件生效并跨重启记住。默认关闭。
 - **音量条**：右下角，与时间码同一行；点击定位、可拖拽，跨预览与跨重启记忆。
-- **时间码**：`mm:ss / mm:ss`，超过一小时自动显示小时。
+- **时间码与格式**：左下角 `mm:ss / mm:ss`，超过一小时自动显示小时；旁边是解码后的
+  采样率与位深，如 `44.1kHz · 16bit`，浮点样本显示为 `32bit F`。
 - 跟随 QuickLook 的明暗主题，控件背景透明，使用宿主窗口底色。
 
 | 操作 | 行为 |
@@ -92,9 +93,9 @@ WaveformHarness artifacts/testdata/test-3min.wav --screenshot out.png
 
 ```
 open reader    : 4 ms
-scan (8192 col): 42 ms          分配 0.2 MB
-first waveform : 177 ms         冷启动，含 WPF 首次建窗
-warm reopen    : 10 ms 出画面 / 26 ms 出完整波形   ← 切下一个文件就是这个数
+scan (4096 col): 40 ms          分配 0.2 MB
+first waveform : 199 ms         冷启动，含 WPF 首次建窗
+warm reopen    : 12 ms 出画面 / 23 ms 出完整波形   ← 切下一个文件就是这个数
 idle CPU       : 0 %
 playhead tick  : 0.02 ms
 playback CPU   : 约 3 % 单核

@@ -40,10 +40,13 @@ needed.
 - `WaveformPreviewControl.xaml(.cs)` — the whole preview: theme, load, seek,
   playback, clock, teardown. ~400 lines, on purpose.
 - `Controls/WaveformView.cs` — rasterizes a `WaveformData` to a bitmap at the
-  element's own pixel size and blits it.
+  element's own pixel size and blits it. `ColumnDensity` (0.8) is how many
+  waveform columns it draws per device pixel.
 - `Audio/` — unchanged, proven 1.x code: `WaveformData` (streaming peak scan with
   progressive snapshots), `WaveformRasterizer`, `AudioReaderFactory`,
   `AudioPlayer` (WASAPI), `AiffReader`, `ChannelMixSampleProvider`.
+- `Audio/AudioFormatInfo.cs` — the new footer line (`44.1kHz · 16bit`,
+  `32bit F` for float), derived from the decoder's `WaveFormat`.
 - `tools/WaveformHarness` — dev tool: opens a real file in a real window and
   prints open/scan/paint/idle-CPU/tick numbers. `--make-test` writes its own WAV,
   `--screenshot` renders a PNG, `--play` exercises playback, `--click` traces the

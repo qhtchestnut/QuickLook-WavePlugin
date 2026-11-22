@@ -115,9 +115,9 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                 Console.WriteLine("open reader    : " + sw.Elapsed.TotalMilliseconds.ToString("0.0") + " ms");
 
                 sw.Restart();
-                var scan = WaveformData.Compute(reader, 8192);
+                var scan = WaveformData.Compute(reader, 4096);
                 sw.Stop();
-                Console.WriteLine("scan (8192 col): " + sw.Elapsed.TotalMilliseconds.ToString("0.0") + " ms  ("
+                Console.WriteLine("scan (4096 col): " + sw.Elapsed.TotalMilliseconds.ToString("0.0") + " ms  ("
                     + scan.ChannelCount + " ch x " + scan.Columns + " cols)");
             }
             long scanAlloc = AppDomain.CurrentDomain.MonitoringTotalAllocatedMemorySize - allocMark;
