@@ -6,11 +6,15 @@
 
   <Grid Background="Transparent">
 
-    <!-- The whole preview: one waveform, a playhead, and the time. Click/drag anywhere to seek. -->
+    <!-- The whole preview: one waveform, a playhead, and the time. Click/drag anywhere to seek;
+         roll the wheel over it to change the volume. The wheel is handled here rather than on
+         the slider so the gesture works on the waveform itself, which is where the pointer
+         usually is. -->
     <Grid x:Name="Area" Background="Transparent" ClipToBounds="True"
           MouseLeftButtonDown="OnAreaMouseDown"
           MouseMove="OnAreaMouseMove"
           MouseLeftButtonUp="OnAreaMouseUp"
+          MouseWheel="OnAreaMouseWheel"
           LostMouseCapture="OnAreaLostMouseCapture">
 
       <!-- Margins define the drawing area; the playhead repeats the same left/top/bottom so

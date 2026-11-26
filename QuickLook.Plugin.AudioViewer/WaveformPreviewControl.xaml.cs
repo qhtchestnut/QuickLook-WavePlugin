@@ -17,7 +17,8 @@ namespace QuickLook.Plugin.AudioViewer
 {
     /// <summary>
     /// The whole preview: a waveform of the entire file, fitted to the window, plus playback.
-    /// Click or drag anywhere on the waveform to seek; clicking also starts playback.
+    /// Click or drag anywhere on the waveform to seek; clicking also starts playback. The
+    /// mouse wheel over the waveform changes the volume.
     /// </summary>
     /// <remarks>
     /// Deliberately small. There is no spectrogram, no zoom, no scrolling and no settings,
@@ -36,6 +37,14 @@ namespace QuickLook.Plugin.AudioViewer
 
         /// <summary>Playhead update interval while playing; playback pauses stop the timer.</summary>
         private const int TickMilliseconds = 33;
+
+        /// <summary>
+        /// How much one wheel notch changes the volume. A notch is a delta of 120, and
+        /// precision wheels send smaller deltas, which then change the level more finely.
+        /// 8 % per notch: a full sweep is a dozen notches, quick enough to nudge without
+        /// spinning the wheel.
+        /// </summary>
+        private const double WheelVolumeStep = 0.08;
 
         // The plugin's settings file, shared with the 1.x plugin: its AutoPlay is read and its
         // other keys are left untouched.
@@ -538,6 +547,33 @@ namespace QuickLook.Plugin.AudioViewer
                 _clock.Stop();
                 SyncPlayButton();      // back to "播放": the file ended, or the device went away
             }
+        }
+
+        // ------------------------------------------------------------------ volume
+
+        /// <summary>
+        /// The wheel over the waveform is a volume control: up is louder. It changes the same
+        /// state as the slider — the static level, the player, the debounced settings write —
+        /// so the two can never disagree about the current level.
+        /// </summary>
+        private void OnAreaMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (e.Delta == 0) return;
+            e.Handled = true;              // there is nothing for the host to scroll here
+
+            float next = (float)Clamp01(_volume + WheelVolumeStep * e.Delta / 120.0);
+            if (next == _volume) return;   // already at 0 or at 1
+
+            _volume = next;
+            if (_player != null) _player.Volume = _volume;
+
+            // Move the slider with the wheel, behind the same guard the constructor uses:
+            // assigning Value otherwise fires OnVolumeChanged and applies the level twice.
+            _settingVolume = true;
+            VolumeSlider.Value = _volume;
+            _settingVolume = false;
+
+            ScheduleVolumeSave();          // debounced, exactly like a slider drag
         }
 
         private void OnVolumeChanged(object sender, RoutedPropertyChangedEventArgs<double> e)

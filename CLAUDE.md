@@ -50,7 +50,8 @@ needed.
 - `tools/WaveformHarness` — dev tool: opens a real file in a real window and
   prints open/scan/paint/idle-CPU/tick numbers. `--make-test` writes its own WAV,
   `--screenshot` renders a PNG, `--play` exercises playback, `--click` traces the
-  playhead around a click, `--pause` drives the play/pause button, `--autoplay`
+  playhead around a click, `--pause` drives the play/pause button, `--wheel` rolls
+  the wheel over the waveform and checks the volume follows, `--autoplay`
   turns the checkbox on and checks the next preview starts on its own. Not shipped.
 
 ## Invariants that are easy to break
@@ -85,6 +86,14 @@ needed.
   writes 0.8 back into the static, which silently reset the level on every new
   preview. `IsMoveToPointEnabled="True"` is deliberate too: without it a click
   steps by `LargeChange` instead of landing where it was clicked.
+- **The mouse wheel over the preview changes the volume.** `OnAreaMouseWheel`
+  lives on `Area` because `Waveform` is `IsHitTestVisible="False"`; it steps
+  `_volume` by 8 % per notch (scaled by `e.Delta / 120`, so precision wheels are
+  finer), clamps to 0–1, applies the level to the player if one exists, moves
+  `VolumeSlider` behind `_settingVolume` (otherwise `OnVolumeChanged` would apply
+  it twice) and saves through the same 400 ms debounce. It marks the event handled
+  so the host does not also scroll on it. Do not attach the handler to the slider:
+  it would only work in the bottom-right corner instead of on the waveform.
 - **Volume is persisted, but never per change.** `SettingHelper.Set` rewrites the
   whole XML document, so a slider drag would write dozens of times a second: the
   write is debounced 400 ms and flushed from `Unload()` (a preview closed inside

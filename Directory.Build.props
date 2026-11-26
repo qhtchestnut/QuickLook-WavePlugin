@@ -8,7 +8,7 @@
   -->
 
   <PropertyGroup>
-    <PluginVersion>2.0.0</PluginVersion>
+    <PluginVersion>2.0.2</PluginVersion>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
 

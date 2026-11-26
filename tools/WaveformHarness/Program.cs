@@ -57,6 +57,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             _play = false;
             _click = false;
             _pause = false;
+            _wheel = false;
             _autoPlayProbe = false;
             _screenshot = null;
             for (int i = 0; i < args.Length; i++)
@@ -65,6 +66,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
                 else if (args[i] == "--play") _play = true;
                 else if (args[i] == "--click") _click = true;
                 else if (args[i] == "--pause") _pause = true;
+                else if (args[i] == "--wheel") _wheel = true;
                 else if (args[i] == "--autoplay") _autoPlayProbe = true;
                 else if (args[i] == "--screenshot" && i + 1 < args.Length) _screenshot = args[++i];
             }
@@ -314,6 +316,7 @@ namespace QuickLook.Plugin.AudioViewer.Harness
 
                 if (_pause) PauseProbe(window, control, first);
                 else if (_click) ClickProbe(window, control, first);
+                else if (_wheel) WheelProbe(window, control, first);
                 else if (_play) PlaybackProbe(window, control, first);
                 else
                 {
@@ -386,9 +389,53 @@ namespace QuickLook.Plugin.AudioViewer.Harness
             step.Start();
         }
 
+        /// <summary>
+        /// Roll the wheel over the waveform the way a user does and report the level after each
+        /// notch: the slider has to follow the wheel, the top has to clamp, and the event must
+        /// be marked handled so the host does not also scroll on it.
+        /// </summary>
+        private static void WheelProbe(Window window, FrameworkElement control, Window first)
+        {
+            var area = (System.Windows.Controls.Grid)control.FindName("Area");
+            var volume = (System.Windows.Controls.Slider)control.FindName("VolumeSlider");
+            bool handled = false;
+            control.AddHandler(UIElement.MouseWheelEvent,
+                new System.Windows.Input.MouseWheelEventHandler((s, e) => handled = e.Handled), true);
+
+            volume.Value = 0.5;            // a known start, whatever the previous preview left
+
+            var steps = new System.Collections.Generic.List<string>();
+            var up = new System.Collections.Generic.List<string>();
+            foreach (int delta in new[] { 120, 120, 120, -120, -120, -120 })
+                steps.Add(Roll(area, delta, volume));
+            for (int i = 0; i < 20; i++) Roll(area, 120, volume);
+            up.Add(volume.Value.ToString("0.00"));
+            up.Add(Roll(area, -120, volume));
+
+            Console.WriteLine("wheel notches  : " + string.Join(" ", steps)
+                + "  (start 0.50, three up then three down)");
+            Console.WriteLine("wheel clamp    : " + string.Join(" -> ", up)
+                + "  (20 notches up stop at 1.00; one down is 0.92)");
+            Console.WriteLine("wheel handled  : " + handled + "  (the host sees no wheel event)");
+
+            ClosePreview(window);
+            ClosePreview(first);
+            Application.Current.Shutdown();
+        }
+
+        private static string Roll(System.Windows.Controls.Grid area, int delta,
+            System.Windows.Controls.Slider volume)
+        {
+            area.RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(
+                System.Windows.Input.Mouse.PrimaryDevice, Environment.TickCount, delta)
+            { RoutedEvent = UIElement.MouseWheelEvent });
+            return volume.Value.ToString("0.00");
+        }
+
         private static bool _play;
         private static bool _click;
         private static bool _pause;
+        private static bool _wheel;
         private static bool _darkTheme = true;
         private static bool _autoPlayProbe;
         private static string _screenshot;

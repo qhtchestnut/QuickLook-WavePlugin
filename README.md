@@ -26,7 +26,8 @@
 - **拖动 scrub**：按住期间输出暂停，松手从落点开始播（避免爆音）。
 - **播放 / 暂停按钮**：底部居中；暂停后再按从原处继续，播完再按从头开始。
 - **Auto Play**：右下角复选框，对所有文件生效并跨重启记住。默认关闭。
-- **音量条**：右下角，与时间码同一行；点击定位、可拖拽，跨预览与跨重启记忆。
+- **音量条**：右下角，与时间码同一行；点击定位、可拖拽。在波形上滚动滚轮也能调音量
+  （每格 8%），跨预览与跨重启记忆。
 - **时间码与格式**：左下角 `mm:ss / mm:ss`，超过一小时自动显示小时。解码后的采样率与位深
   （如 `44.1kHz · 16bit`，浮点写作 `32bit F`）显示在底部中间播放按钮的左侧，比时间码更亮，
   避免和一串数字混在一起；窗口过窄时会自动隐藏。
@@ -39,6 +40,7 @@
 | 底部中间的按钮 | 播放 / 暂停；暂停后再按从原处继续，播完再按从头开始 |
 | 「Auto Play」 | 每次打开预览时自动开始播放；勾选状态对所有文件生效 |
 | 音量条 | 点击轨道即定位，或拖拽 |
+| 在波形上滚动滚轮 | 调音量：上滚变响、下滚变轻，每格 8% |
 
 预览本身不处理任何键盘输入：`Space` 和方向键留给 QuickLook 与资源管理器（它们用来开关预览、
 切换文件）。
@@ -87,6 +89,7 @@ dotnet build tools/WaveformHarness -c Release
 WaveformHarness --make-test artifacts/testdata/test-3min.wav 180
 WaveformHarness artifacts/testdata/test-3min.wav --play
 WaveformHarness artifacts/testdata/test-3min.wav --click        # 点击后的播放头轨迹
+WaveformHarness artifacts/testdata/test-3min.wav --wheel        # 滚轮调音量的每格步进
 WaveformHarness artifacts/testdata/test-3min.wav --screenshot out.png
 ```
 
